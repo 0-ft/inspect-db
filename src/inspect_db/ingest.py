@@ -1,7 +1,7 @@
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import nullcontext
 from pathlib import Path
 from glob import glob
-from typing import ContextManager, Literal, Optional, Dict, Any, Tuple, Protocol
+from typing import ContextManager, Literal, Optional, Dict, Any, Protocol
 import queue
 from concurrent.futures import ThreadPoolExecutor
 from inspect_ai.log import read_eval_log

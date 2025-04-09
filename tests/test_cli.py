@@ -1,5 +1,3 @@
-from unittest import mock
-import pytest
 from pathlib import Path
 from click.testing import CliRunner
 from inspect_db.cli import cli
@@ -7,7 +5,6 @@ from inspect_ai.log import EvalLog, write_eval_log
 from inspect_db.db import EvalDB
 from sqlmodel import select, func
 from inspect_db.models import DBEvalLog
-from inspect_db.ingest import IngestionProgressListener
 
 
 def test_ingest_command(db_uri: str, sample_eval_log_path: Path, mock_progress_listener, mocker):

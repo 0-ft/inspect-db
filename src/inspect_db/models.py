@@ -9,8 +9,8 @@ from datetime import datetime
 import uuid
 from enum import Enum
 from inspect_ai.log import EvalSample
-from inspect_ai.model import ChatMessage
 from uuid import UUID
+
 class MessageRole(str, Enum):
     """Enum for chat message roles."""
     SYSTEM = "system"

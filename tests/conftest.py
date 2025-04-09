@@ -2,7 +2,6 @@ from contextlib import nullcontext
 import pytest
 from pathlib import Path
 import tempfile
-import shutil
 from inspect_ai.log import EvalLog, read_eval_log
 from pytest_mock import MockerFixture
 

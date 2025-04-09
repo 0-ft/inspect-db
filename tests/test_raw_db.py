@@ -1,9 +1,8 @@
-import json
 from inspect_ai.log import EvalLog, read_eval_log
 import pytest
 from pathlib import Path
 from inspect_db.db import EvalDB
-from inspect_db.models import DBEvalLog, DBEvalSample, DBChatMessage, MessageRole
+from inspect_db.models import DBEvalLog, MessageRole
 
 @pytest.fixture
 def raw_db(db_uri: str):

@@ -1,8 +1,7 @@
 from uuid import UUID
-from inspect_ai.log import EvalLog, EvalSample
-from inspect_ai.model import ChatMessage
+from inspect_ai.log import EvalLog
 from sqlmodel import SQLModel, create_engine, Session, select
-from typing import Optional, Sequence, List
+from typing import Optional, Sequence
 from contextlib import contextmanager
 from .models import DBEvalLog, DBEvalSample, DBChatMessage, MessageRole
 import logging
