@@ -9,7 +9,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-class RawEvalDB:
+class EvalDB:
     """Low-level database operations that work directly with database models."""
     
     def __init__(self, database_url: str):

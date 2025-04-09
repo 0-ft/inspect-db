@@ -1,13 +1,13 @@
 from inspect_ai.log import EvalLog, read_eval_log
 import pytest
 from pathlib import Path
-from inspect_db.db import RawEvalDB
+from inspect_db.db import EvalDB
 from inspect_db.models import DBEvalLog, DBEvalSample, DBChatMessage, MessageRole
 
 @pytest.fixture
 def raw_db(db_uri: str):
     """Create a temporary database for testing."""
-    return RawEvalDB(db_uri)
+    return EvalDB(db_uri)
 
 @pytest.fixture
 def sample_log():
@@ -15,7 +15,7 @@ def sample_log():
     log_path = Path(__file__).parent / "sample_logs" / "2025-03-28T23-01-38+00-00_agentharm_Nxk5Uxvp8fxJ6ecWsUah43.eval"
     return read_eval_log(str(log_path))
 
-def test_insert_log(raw_db: RawEvalDB, sample_log: EvalLog):
+def test_insert_log(raw_db: EvalDB, sample_log: EvalLog):
     """Test inserting a log with samples and messages."""
     log_uuid = raw_db.insert_log(sample_log)
     
@@ -28,7 +28,7 @@ def test_insert_log(raw_db: RawEvalDB, sample_log: EvalLog):
         print(samples)
         assert len(samples) == len(sample_log.samples or [])
 
-def test_get_db_log(raw_db: RawEvalDB, sample_log: EvalLog):
+def test_get_db_log(raw_db: EvalDB, sample_log: EvalLog):
     """Test retrieving a log by UUID."""
     # First insert a log
     log_uuid = raw_db.insert_log(sample_log)
@@ -38,7 +38,7 @@ def test_get_db_log(raw_db: RawEvalDB, sample_log: EvalLog):
     assert db_log is not None
     assert db_log.location == sample_log.location
 
-def test_get_db_samples(raw_db: RawEvalDB, sample_log: EvalLog):
+def test_get_db_samples(raw_db: EvalDB, sample_log: EvalLog):
     """Test retrieving samples for a log."""
     # First insert a log
     log_uuid = raw_db.insert_log(sample_log)
@@ -54,7 +54,7 @@ def test_get_db_samples(raw_db: RawEvalDB, sample_log: EvalLog):
         assert db_sample.input == original_sample.input
         assert db_sample.target == original_sample.target
 
-def test_get_db_sample(raw_db: RawEvalDB, sample_log: EvalLog):
+def test_get_db_sample(raw_db: EvalDB, sample_log: EvalLog):
     """Test retrieving a single sample by UUID."""
     # First insert a log
     log_uuid = raw_db.insert_log(sample_log)
@@ -69,7 +69,7 @@ def test_get_db_sample(raw_db: RawEvalDB, sample_log: EvalLog):
     assert db_sample is not None
     assert db_sample.uuid == sample_uuid
 
-def test_get_db_messages(raw_db: RawEvalDB, sample_log: EvalLog):
+def test_get_db_messages(raw_db: EvalDB, sample_log: EvalLog):
     """Test retrieving messages for a sample."""
     # First insert a log
     log_uuid = raw_db.insert_log(sample_log)

@@ -1,6 +1,6 @@
 from pathlib import Path
 from inspect_db.ingest import process_eval_file, worker, ingest_eval_files, get_db_stats
-from inspect_db.db import RawEvalDB
+from inspect_db.db import EvalDB
 from inspect_db.models import DBEvalLog
 import queue
 from sqlmodel import select, func
@@ -8,7 +8,7 @@ from sqlmodel import select, func
 
 def test_process_eval_file_success(db_uri: str, sample_eval_log_path: Path, mock_progress_listener, mocker):
     """Test successful processing of an eval file."""
-    db = RawEvalDB(db_uri)
+    db = EvalDB(db_uri)
     
     success = process_eval_file(sample_eval_log_path, db, mock_progress_listener)
     
@@ -25,7 +25,7 @@ def test_process_eval_file_success(db_uri: str, sample_eval_log_path: Path, mock
 
 def test_process_eval_file_duplicate(db_uri: str, sample_eval_log_path: Path, mock_progress_listener, mocker):
     """Test handling of duplicate eval files."""
-    db = RawEvalDB(db_uri)
+    db = EvalDB(db_uri)
     
     # Process file first time
     process_eval_file(sample_eval_log_path, db, mock_progress_listener)
@@ -42,7 +42,7 @@ def test_process_eval_file_duplicate(db_uri: str, sample_eval_log_path: Path, mo
 
 def test_process_eval_file_invalid(db_uri: str, temp_dir: Path, mock_progress_listener, mocker):
     """Test handling of invalid eval files."""
-    db = RawEvalDB(db_uri)
+    db = EvalDB(db_uri)
     
     # Create invalid eval file
     invalid_file = temp_dir / "invalid.eval"
@@ -58,7 +58,7 @@ def test_process_eval_file_invalid(db_uri: str, temp_dir: Path, mock_progress_li
 
 def test_worker(db_uri: str, sample_eval_log_path: Path, mock_progress_listener, mocker):
     """Test the worker function."""
-    db = RawEvalDB(db_uri)
+    db = EvalDB(db_uri)
     q = queue.Queue()
     
     # Add task to queue
@@ -75,7 +75,7 @@ def test_worker(db_uri: str, sample_eval_log_path: Path, mock_progress_listener,
 def test_get_db_stats(db_uri: str, sample_eval_log_path: Path, mock_progress_listener):
     """Test the database statistics function."""
     # Insert some data
-    db = RawEvalDB(db_uri)
+    db = EvalDB(db_uri)
     process_eval_file(sample_eval_log_path, db, mock_progress_listener)
     
     # Get stats
@@ -99,7 +99,7 @@ def test_ingest_eval_file(db_uri: str, sample_eval_log_path: Path, mock_progress
     mock_progress_listener.on_ingestion_complete.assert_called_once()
     
     # Verify database contains one record
-    db = RawEvalDB(db_uri)
+    db = EvalDB(db_uri)
     with db.session() as session:
         log_count = session.exec(select(func.count()).select_from(DBEvalLog)).one()
         assert log_count == 1
@@ -116,7 +116,7 @@ def test_ingest_eval_files_with_duplicates(db_uri: str, temp_dir: Path, sample_e
     mock_progress_listener.on_ingestion_complete.assert_called_once()
     
     # Verify only one record was inserted
-    db = RawEvalDB(db_uri)
+    db = EvalDB(db_uri)
     with db.session() as session:
         log_count = session.exec(select(func.count()).select_from(DBEvalLog)).one()
         assert log_count == 1

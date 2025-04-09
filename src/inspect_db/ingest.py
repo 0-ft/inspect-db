@@ -5,7 +5,7 @@ from typing import ContextManager, Literal, Optional, Dict, Any, Tuple, Protocol
 import queue
 from concurrent.futures import ThreadPoolExecutor
 from inspect_ai.log import read_eval_log
-from .db import RawEvalDB
+from .db import EvalDB
 from sqlmodel import select, func
 from .models import DBEvalLog, DBEvalSample, DBChatMessage
 from sqlalchemy.exc import IntegrityError
@@ -79,7 +79,7 @@ def get_db_stats(database_uri: str) -> Dict[str, Any]:
     Returns:
         Dictionary containing database statistics
     """
-    db = RawEvalDB(database_uri)
+    db = EvalDB(database_uri)
     
     with db.session() as session:
         # Count logs
@@ -126,7 +126,7 @@ def get_db_stats(database_uri: str) -> Dict[str, Any]:
             "role_distribution": dict(role_counts)
         }
 
-def process_eval_file(eval_file: Path, db: RawEvalDB, progress: IngestionProgressListener) -> bool:
+def process_eval_file(eval_file: Path, db: EvalDB, progress: IngestionProgressListener) -> bool:
     """Process a single eval file and insert it into the database.
     
     Args:
@@ -151,7 +151,7 @@ def process_eval_file(eval_file: Path, db: RawEvalDB, progress: IngestionProgres
         progress.on_file_finished(file_id, "error", f"Error processing {eval_file.name}: {str(e)}")
         return False
 
-def worker(q: queue.Queue, db: RawEvalDB, progress: IngestionProgressListener):
+def worker(q: queue.Queue, db: EvalDB, progress: IngestionProgressListener):
     """Worker thread that processes eval files from the queue.
     
     Args:
@@ -185,7 +185,7 @@ def ingest_eval_files(
         progress_listener: Optional progress listener for custom progress display
     """
     # Initialize database
-    db = RawEvalDB(database_uri)
+    db = EvalDB(database_uri)
     
     # Find all eval files
     eval_files = []

@@ -4,7 +4,7 @@ from pathlib import Path
 from click.testing import CliRunner
 from inspect_db.cli import cli
 from inspect_ai.log import EvalLog, write_eval_log
-from inspect_db.db import RawEvalDB
+from inspect_db.db import EvalDB
 from sqlmodel import select, func
 from inspect_db.models import DBEvalLog
 from inspect_db.ingest import IngestionProgressListener
@@ -27,7 +27,7 @@ def test_ingest_command(db_uri: str, sample_eval_log_path: Path, mock_progress_l
     mock_progress_listener.on_ingestion_complete.assert_called_once()
     
     # Verify database was created and contains data
-    db = RawEvalDB(db_uri)
+    db = EvalDB(db_uri)
     with db.session() as session:
         count = session.exec(select(func.count()).select_from(DBEvalLog)).one()
         assert count == 1
@@ -52,7 +52,7 @@ def test_ingest_command_multiple_files(db_uri: str, temp_dir: Path, sample_eval_
     mock_progress_listener.on_ingestion_complete.assert_called_once()
     
     # Verify database contains all records
-    db = RawEvalDB(db_uri)
+    db = EvalDB(db_uri)
     with db.session() as session:
         count = session.exec(select(func.count()).select_from(DBEvalLog)).one()
         assert count == 3
@@ -80,7 +80,7 @@ def test_ingest_command_duplicate_files(db_uri: str, sample_eval_log_path: Path,
     mock_progress_listener.on_ingestion_complete.assert_called()
     
     # Verify only one record was inserted
-    db = RawEvalDB(db_uri)
+    db = EvalDB(db_uri)
     with db.session() as session:
         count = session.exec(select(func.count()).select_from(DBEvalLog)).one()
         assert count == 1
@@ -125,7 +125,7 @@ def test_ingest_command_with_workers(db_uri: str, temp_dir: Path, sample_eval_lo
     mock_progress_listener.on_ingestion_complete.assert_called_once()
     
     # Verify all records were inserted
-    db = RawEvalDB(db_uri)
+    db = EvalDB(db_uri)
     with db.session() as session:
         count = session.exec(select(func.count()).select_from(DBEvalLog)).one()
         assert count == 5
@@ -145,7 +145,7 @@ def test_ingest_command_quiet(db_uri: str, sample_eval_log_path: Path, mock_prog
     mock_progress_listener.on_ingestion_complete.assert_not_called()
     
     # Verify database was still updated
-    db = RawEvalDB(db_uri)
+    db = EvalDB(db_uri)
     with db.session() as session:
         count = session.exec(select(func.count()).select_from(DBEvalLog)).one()
         assert count == 1
