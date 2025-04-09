@@ -1,0 +1,50 @@
+[project]
+name = "inspect-db"
+version = "0.1.0"
+description = "A fast database for ingesting and querying Inspect eval runs"
+authors = [
+    { name = "Your Name", email = "your.email@example.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "duckdb>=1.2.2",
+    "duckdb-engine>=0.17.0",
+    "inspect-ai>=0.3.85",
+    "pydantic>=2.11.3",
+    "rich>=13.9.4",
+    "sqlmodel>=0.0.24",
+]
+
+[project.scripts]
+inspect-db = "inspect_db.cli:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+    "pytest-mock>=3.12.0",
+    "ruff>=0.3.0",
+    "pyright>=1.1.398",
+]
+
+[tool.ruff]
+    [tool.ruff.lint]
+        ignore=[
+            "D10",
+            "E501",
+        ]
+
+[tool.pyright]
+include = ["."]
+venv = ".venv"
+venvPath = "."
+
+reportIncompatibleMethodOverride = true
