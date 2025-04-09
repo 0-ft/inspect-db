@@ -50,24 +50,12 @@ class EvalDB:
 
             # Insert samples and messages
             for sample in log.samples or []:
-                db_sample = DBEvalSample(
-                    id=str(sample.id),
-                    epoch=sample.epoch,
-                    log_uuid=log_uuid,
-                    input=sample.input,
-                    target=sample.target,
-                )
+                db_sample = DBEvalSample.from_inspect(sample, log_uuid)
                 session.add(db_sample)
                 
                 # Insert messages
                 for index, msg in enumerate(sample.messages):
-                    db_msg = DBChatMessage(
-                        id=msg.id or "",
-                        sample_uuid=db_sample.uuid,
-                        role=MessageRole(msg.role),
-                        content=msg.content,
-                        index_in_sample=index
-                    )
+                    db_msg = DBChatMessage.from_inspect(msg, db_sample.uuid, index)
                     session.add(db_msg)
             
             session.commit()

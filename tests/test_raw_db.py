@@ -1,3 +1,4 @@
+import json
 from inspect_ai.log import EvalLog, read_eval_log
 import pytest
 from pathlib import Path
@@ -17,6 +18,7 @@ def sample_log():
 
 def test_insert_log(raw_db: EvalDB, sample_log: EvalLog):
     """Test inserting a log with samples and messages."""
+    # print("output glarb", json.dumps(sample_log.samples[0].output))
     log_uuid = raw_db.insert_log(sample_log)
     
     # Verify log was inserted
@@ -94,3 +96,26 @@ def test_get_db_messages(raw_db: EvalDB, sample_log: EvalLog):
             assert db_msg.role == MessageRole(original_msg.role)
             assert db_msg.content == original_msg.content
             assert db_msg.index_in_sample == original_sample.messages.index(original_msg)
+
+def test_to_inspect(raw_db: EvalDB, sample_log: EvalLog):
+    """Test converting a DB model to an inspect-ai model."""
+    # First insert a log
+    assert sample_log.samples is not None
+    assert len(sample_log.samples) > 0
+    sample = sample_log.samples[0]
+    sample_log.samples = [sample]
+    log_uuid = raw_db.insert_log(sample_log)
+    
+    # Get a sample to get its UUID
+    db_samples = raw_db.get_db_samples(log_uuid)
+    assert len(db_samples) > 0
+    sample_uuid = db_samples[0].uuid
+    
+    # Test converting a sample
+    db_sample = raw_db.get_db_sample(sample_uuid)
+    assert db_sample is not None
+    inspect_sample = db_sample.to_inspect()
+    assert inspect_sample is not None
+    assert inspect_sample.id == db_sample.id
+    assert inspect_sample.epoch == db_sample.epoch
+    assert inspect_sample.input == db_sample.input
