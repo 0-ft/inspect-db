@@ -1,7 +1,9 @@
+from collections.abc import Iterator
 from uuid import UUID
 from inspect_ai.log import EvalLog
+from sqlalchemy import Engine
 from sqlmodel import SQLModel, create_engine, Session, select
-from typing import Literal, Sequence
+from typing import Literal
 from contextlib import contextmanager
 from .models import DBEvalLog, DBEvalSample, DBChatMessage, MessageRole
 import logging
@@ -12,13 +14,16 @@ logger = logging.getLogger(__name__)
 class EvalDB:
     """Low-level database operations that work directly with database models."""
 
-    def __init__(self, database_url: str):
+    def __init__(self, db: str | Engine):
         """Initialize the database connection.
 
         Args:
             database_url: SQLAlchemy database URL (e.g. 'sqlite:///eval.db')
         """
-        self.engine = create_engine(database_url)
+        if isinstance(db, str):
+            self.engine = create_engine(db)
+        else:
+            self.engine = db
         SQLModel.metadata.create_all(self.engine)
 
     @contextmanager
@@ -46,7 +51,7 @@ class EvalDB:
             session.add(db_log)
             session.commit()
             session.refresh(db_log)  # Ensure we have the UUID
-            log_uuid = db_log.uuid
+            log_uuid = db_log.db_uuid
 
             # Insert samples and messages
             for sample in log.samples or []:
@@ -55,14 +60,14 @@ class EvalDB:
 
                 # Insert messages
                 for index, msg in enumerate(sample.messages):
-                    db_msg = DBChatMessage.from_inspect(msg, db_sample.uuid, index)
+                    db_msg = DBChatMessage.from_inspect(msg, db_sample.db_uuid, index)
                     session.add(db_msg)
 
             session.commit()
 
         return log_uuid
 
-    def get_db_logs(self, log_uuid: UUID | None = None) -> Sequence[DBEvalLog]:
+    def get_db_logs(self, log_uuid: UUID | None = None) -> Iterator[DBEvalLog]:
         """Get all logs in the database.
 
         Args:
@@ -73,13 +78,13 @@ class EvalDB:
         """
         query = select(DBEvalLog)
         if log_uuid:
-            query = query.where(DBEvalLog.uuid == log_uuid)
+            query = query.where(DBEvalLog.db_uuid == log_uuid)
         with self.session() as session:
-            return session.exec(query).all()
+            yield from session.exec(query)
 
     def get_db_samples(
         self, log_uuid: UUID | None = None, sample_uuid: UUID | None = None
-    ) -> Sequence[DBEvalSample]:
+    ) -> Iterator[DBEvalSample]:
         """Get all samples for a log.
 
         Args:
@@ -90,18 +95,18 @@ class EvalDB:
         """
         query = select(DBEvalSample)
         if log_uuid:
-            query = query.where(DBEvalSample.log_uuid == log_uuid)
+            query = query.where(DBEvalSample.db_log_uuid == log_uuid)
         if sample_uuid:
-            query = query.where(DBEvalSample.uuid == sample_uuid)
+            query = query.where(DBEvalSample.db_uuid == sample_uuid)
         with self.session() as session:
-            return session.exec(query).all()
+            yield from session.exec(query)
 
     def get_db_messages(
         self,
         log_uuid: UUID | None = None,
         sample_uuid: UUID | None = None,
         role: Literal["system", "user", "assistant", "tool"] | None = None,
-    ) -> Sequence[DBChatMessage]:
+    ) -> Iterator[DBChatMessage]:
         """Get database messages for a sample, optionally filtered by role.
 
         Args:
@@ -113,10 +118,10 @@ class EvalDB:
         """
         query = select(DBChatMessage).order_by(DBChatMessage.index_in_sample)
         if log_uuid:
-            query = query.where(DBChatMessage.sample_uuid == sample_uuid)
+            query = query.where(DBChatMessage.db_sample_uuid == sample_uuid)
         if sample_uuid:
-            query = query.where(DBChatMessage.sample_uuid == sample_uuid)
+            query = query.where(DBChatMessage.db_sample_uuid == sample_uuid)
         if role:
             query = query.where(DBChatMessage.role == MessageRole(role))
         with self.session() as session:
-            return session.exec(query).all()
+            yield from session.exec(query)
