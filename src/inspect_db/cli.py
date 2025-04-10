@@ -211,21 +211,19 @@ def grep(
         if collect_logs:
             by_log = itertools.groupby(messages, key=lambda x: x.sample.log)
             for log, messages in by_log:
-                log_panel = create_log_panel(
-                    log,
-                    [
-                        create_sample_panel(
-                            sample,
-                            [
-                                create_message_panel(message, pattern)
-                                for message in messages
-                            ],
-                        )
-                        for sample, messages in itertools.groupby(
-                            messages, key=lambda x: x.sample
-                        )
-                    ],
-                )
+                sample_panels = [
+                    create_sample_panel(
+                        sample,
+                        [
+                            create_message_panel(message, pattern)
+                            for message in messages
+                        ],
+                    )
+                    for sample, messages in itertools.groupby(
+                        messages, key=lambda x: x.sample
+                    )
+                ]
+                log_panel = create_log_panel(log, sample_panels)
                 console.print(log_panel)
         else:
             by_sample = itertools.groupby(

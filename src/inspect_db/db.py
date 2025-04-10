@@ -1,6 +1,6 @@
 from collections.abc import Iterator
 from uuid import UUID
-from inspect_ai.log import EvalLog
+from inspect_ai.log import EvalLog, EvalSample
 from sqlalchemy import Engine
 from sqlmodel import SQLModel, String, cast, col, create_engine, Session, func, select
 from typing import Any, Literal
@@ -33,7 +33,46 @@ class EvalDB:
             SQLModel.metadata.create_all(self.engine)
             yield session
 
-    def insert_log(self, log: EvalLog) -> UUID:
+    def insert_log_header(self, log: EvalLog) -> UUID:
+        """Insert a log header into the database.
+
+        Args:
+            log: EvalLog object
+
+        Returns:
+            The UUID of the inserted log
+        """
+        # Create database models
+        db_log = DBEvalLog.from_inspect(log)
+
+        # Insert log header
+        with self.session() as session:
+            session.add(db_log)
+            session.commit()
+            session.refresh(db_log)  # Ensure we have the UUID
+            log_uuid = db_log.db_uuid
+
+        return log_uuid
+
+    def insert_log_sample(self, sample: EvalSample, log_uuid: UUID) -> UUID:
+        """Insert a log sample into the database.
+
+        Args:
+            sample: EvalSample object
+
+        Returns:
+            The UUID of the inserted log sample
+        """
+        db_sample = DBEvalSample.from_inspect(sample, log_uuid)
+        with self.session() as session:
+            session.add(db_sample)
+            session.commit()
+            session.refresh(db_sample)  # Ensure we have the UUID
+            sample_uuid = db_sample.db_uuid
+
+        return sample_uuid
+
+    def insert_log_and_samples(self, log: EvalLog) -> UUID:
         """Insert a log and its associated samples and messages into the database.
 
         Args:
@@ -43,9 +82,7 @@ class EvalDB:
             The UUID of the inserted log
         """
         # Create database models
-        db_log = DBEvalLog(
-            location=log.location,
-        )
+        db_log = DBEvalLog.from_inspect(log)
 
         # Insert log and samples
         with self.session() as session:

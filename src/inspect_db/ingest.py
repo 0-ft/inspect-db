@@ -1,10 +1,13 @@
 from contextlib import nullcontext
 from glob import glob
 from pathlib import Path
+import re
 from typing import ContextManager, Literal, Optional, Any
 import queue
 from concurrent.futures import ThreadPoolExecutor
-from inspect_ai.log import EvalLog, read_eval_log
+from uuid import UUID
+import zipfile
+from inspect_ai.log import read_eval_log, read_eval_log_sample
 from .db import EvalDB
 from sqlalchemy.exc import IntegrityError
 from rich.progress import (
@@ -27,37 +30,26 @@ class IngestionProgressListener:
         return nullcontext()
 
     def on_ingestion_started(self, workers: int) -> None:
-        """Called when ingestion starts.
-
-        Args:
-            workers: Number of worker threads
-        """
+        """Called when ingestion starts."""
         pass
 
     def on_log_started(self, file_path: Path) -> None:
-        """Called when a file starts being processed.
-
-        Args:
-            file_path: Path to the file being processed
-
-        Returns:
-            An identifier for this file's progress tracking
-        """
+        """Called when a file starts being processed."""
         pass
 
-    def on_log_loaded(
+    def on_log_header_read(self, file_path: Path, samples_count: int) -> None:
+        """Called when the header of a file has been read."""
+        pass
+
+    def on_log_sample_completed(
         self,
         file_path: Path,
+        sample_id: str,
+        epoch: int,
         status: Literal["success", "error"],
         message: str,
     ) -> None:
-        """Called when a file has been processed.
-
-        Args:
-            file_id: Identifier returned by on_file_started
-            status: Status of the file processing
-            message: Description of the outcome
-        """
+        """Called when a sample of a file has been read."""
         pass
 
     def on_log_completed(
@@ -107,6 +99,29 @@ class RichProgressListener(IngestionProgressListener):
         self.path_tasks[file_path] = task_id
         self.started_count += 1
 
+    def on_log_header_read(self, file_path: Path, samples_count: int) -> None:
+        """Called when the header of a file has been read."""
+        self.rich_progress.update(
+            self.path_tasks[file_path],
+            description=f"Processing {file_path.name} ({samples_count} samples)",
+            total=samples_count,
+        )
+
+    def on_log_sample_completed(
+        self,
+        file_path: Path,
+        sample_id: str,
+        epoch: int,
+        status: Literal["success", "skipped", "error"],
+        message: str,
+    ) -> None:
+        """Called when a sample of a file has been read."""
+        self.rich_progress.update(
+            self.path_tasks[file_path],
+            advance=1,
+            description=f"Processing {file_path.name}",
+        )
+
     def on_log_completed(
         self,
         file_path: Path,
@@ -138,18 +153,34 @@ class RichProgressListener(IngestionProgressListener):
         self.console.print(summary)
 
 
-def insert_log(
-    db: EvalDB, progress: IngestionProgressListener, log_path: Path, log: EvalLog
+def _get_log_sample_ids(log_path: Path) -> list[tuple[str, int]]:
+    """Get the sample ids and epochs from a log file."""
+    # format is samples/<id>_epoch_<epoch>.json
+    pattern = re.compile(r"samples/(.*)_epoch_(\d+).json")
+    with zipfile.ZipFile(log_path, "r") as zip_file:
+        files = list(zip_file.namelist())
+        matches = [pattern.match(file) for file in files]
+        return [(match.group(1), int(match.group(2))) for match in matches if match]
+
+
+def insert_log_samples(
+    db: EvalDB,
+    progress: IngestionProgressListener,
+    log_path: Path,
+    log_uuid: UUID,
+    sample_ids: list[tuple[str, int]],
 ):
-    try:
-        db.insert_log(log)
-        progress.on_log_completed(log_path, "success", f"Inserted {log_path}")
-    except IntegrityError:
-        progress.on_log_completed(
-            log_path, "skipped", f"Log already exists: {log_path}"
-        )
-    except Exception as e:
-        progress.on_log_completed(log_path, "error", str(e))
+    for sample_id, epoch in sample_ids:
+        try:
+            sample = read_eval_log_sample(str(log_path), id=sample_id, epoch=epoch)
+            db.insert_log_sample(sample, log_uuid)
+            progress.on_log_sample_completed(
+                log_path, sample_id, epoch, "success", "Inserted"
+            )
+        except Exception as e:
+            progress.on_log_sample_completed(
+                log_path, sample_id, epoch, "error", str(e)
+            )
 
 
 def load_log_worker(
@@ -165,19 +196,24 @@ def load_log_worker(
     while True:
         try:
             log_path = log_queue.get_nowait()
-            progress.on_log_started(log_path)
-            try:
-                log = read_eval_log(str(log_path))
-                log = EvalLog.model_validate(log)
-                progress.on_log_loaded(log_path, "success", f"Loaded {log_path}")
-                insert_log(db, progress, log_path, log)
-            except Exception as e:
-                progress.on_log_loaded(log_path, "error", str(e))
-                progress.on_log_completed(log_path, "error", str(e))
-            finally:
-                log_queue.task_done()
         except queue.Empty:
             break
+
+        progress.on_log_started(log_path)
+        try:
+            log_header = read_eval_log(str(log_path), header_only=True)
+            sample_ids = _get_log_sample_ids(log_path)
+            log_uuid = db.insert_log_header(log_header)
+            progress.on_log_header_read(log_path, len(sample_ids))
+            insert_log_samples(db, progress, log_path, log_uuid, sample_ids)
+        except IntegrityError:
+            progress.on_log_completed(
+                log_path, "skipped", f"Log already exists: {log_path}"
+            )
+        except Exception as e:
+            progress.on_log_completed(log_path, "error", str(e))
+        finally:
+            log_queue.task_done()
 
 
 def ingest_logs(
