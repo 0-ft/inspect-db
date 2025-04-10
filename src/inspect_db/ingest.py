@@ -1,14 +1,14 @@
-from contextlib import nullcontext
 from glob import glob
 from pathlib import Path
 import re
 from typing import ContextManager, Literal, Optional, Any
 import queue
 from concurrent.futures import ThreadPoolExecutor
-from uuid import UUID
 import zipfile
 from inspect_ai.log import EvalSample, read_eval_log
-from .db import EvalDB
+
+from inspect_db.models import DBChatMessage, DBEvalLog, DBEvalSample
+from .db import EvalDB, IngestionProgressListener
 from sqlalchemy.exc import IntegrityError
 from rich.progress import (
     Progress,
@@ -20,50 +20,6 @@ from rich.progress import (
 )
 from rich.table import Table
 from rich.console import Console
-
-
-class IngestionProgressListener:
-    """Protocol for reporting ingestion progress."""
-
-    def progress(self) -> ContextManager[Any]:
-        """Context manager for progress reporting."""
-        return nullcontext()
-
-    def on_ingestion_started(self, workers: int) -> None:
-        """Called when ingestion starts."""
-        pass
-
-    def on_log_started(self, file_path: Path) -> None:
-        """Called when a file starts being processed."""
-        pass
-
-    def on_log_samples_counted(self, file_path: Path, samples_count: int) -> None:
-        """Called when the header of a file has been read."""
-        pass
-
-    def on_log_sample_completed(
-        self,
-        file_path: Path,
-        sample_id: str,
-        epoch: int,
-        status: Literal["success", "error"],
-        message: str,
-    ) -> None:
-        """Called when a sample of a file has been read."""
-        pass
-
-    def on_log_completed(
-        self,
-        file_path: Path,
-        status: Literal["success", "skipped", "error"],
-        message: str,
-    ) -> None:
-        """Called when a file has been inserted."""
-        pass
-
-    def on_ingestion_complete(self) -> None:
-        """Called when all files have been processed."""
-        pass
 
 
 class RichProgressListener(IngestionProgressListener):
@@ -152,43 +108,93 @@ class RichProgressListener(IngestionProgressListener):
         self.console.print(summary)
 
 
-# def _get_log_sample_ids(log_path: Path) -> list[tuple[str, int]]:
-#     """Get the sample ids and epochs from a log file."""
-#     # format is samples/<id>_epoch_<epoch>.json
+# def fast_read_samples(
+#     db: EvalDB,
+#     progress: IngestionProgressListener,
+#     log_path: Path,
+#     log_uuid: UUID,
+# ):
+#     sample_pattern = re.compile(r"samples/(.*)_epoch_(\d+).json")
 #     with zipfile.ZipFile(log_path, "r") as zip_file:
-#         pattern = re.compile(r"samples/(.*)_epoch_(\d+).json")
 #         files = list(zip_file.namelist())
-#         matches = [pattern.match(file) for file in files]
-#         return [(match.group(1), int(match.group(2))) for match in matches if match]
+#         matches = [sample_pattern.match(file) for file in files]
+#         sample_ids = [
+#             (match.group(1), int(match.group(2))) for match in matches if match
+#         ]
+#         progress.on_log_samples_counted(log_path, len(sample_ids))
+
+#         for id, epoch in sample_ids:
+#             try:
+#                 with zip_file.open(f"samples/{id}_epoch_{epoch}.json", "r") as f:
+#                     sample = EvalSample.model_validate_json(f.read())
+#                     db.insert_sample_and_messages(sample, log_uuid)
+#                     progress.on_log_sample_completed(
+#                         log_path, str(sample.id), sample.epoch, "success", "Inserted"
+#                     )
+#             except Exception as e:
+#                 progress.on_log_sample_completed(
+#                     log_path, str(sample.id), sample.epoch, "error", str(e)
+#                 )
 
 
-def insert_log_samples(
+def fast_ingest_log(
     db: EvalDB,
     progress: IngestionProgressListener,
     log_path: Path,
-    log_uuid: UUID,
 ):
-    sample_pattern = re.compile(r"samples/(.*)_epoch_(\d+).json")
-    with zipfile.ZipFile(log_path, "r") as zip_file:
-        files = list(zip_file.namelist())
-        matches = [sample_pattern.match(file) for file in files]
-        sample_ids = [
-            (match.group(1), int(match.group(2))) for match in matches if match
-        ]
-        progress.on_log_samples_counted(log_path, len(sample_ids))
+    sample_file_pattern = re.compile(r"samples/(.*)_epoch_(\d+).json")
+    progress.on_log_started(log_path)
+    try:
+        log_header = read_eval_log(str(log_path), header_only=True)
+    except Exception as e:
+        progress.on_log_completed(log_path, "error", str(e))
+        return
 
-        for id, epoch in sample_ids:
-            try:
-                with zip_file.open(f"samples/{id}_epoch_{epoch}.json", "r") as f:
-                    sample = EvalSample.model_validate_json(f.read())
-                    db.insert_sample_and_messages(sample, log_uuid)
-                    progress.on_log_sample_completed(
-                        log_path, str(sample.id), sample.epoch, "success", "Inserted"
-                    )
-            except Exception as e:
-                progress.on_log_sample_completed(
-                    log_path, str(sample.id), sample.epoch, "error", str(e)
-                )
+    with db.session() as session:
+        try:
+            db_log = DBEvalLog.from_inspect(log_header)
+            session.add(db_log)
+            session.commit()
+            log_uuid = db_log.db_uuid
+        except IntegrityError:
+            session.rollback()
+            progress.on_log_completed(log_path, "skipped", "Log already exists")
+            return
+
+        try:
+            with zipfile.ZipFile(log_path, "r") as zip_file:
+                files = list(zip_file.namelist())
+                matches = [sample_file_pattern.match(file) for file in files]
+                sample_ids = [
+                    (match.group(1), int(match.group(2))) for match in matches if match
+                ]
+                progress.on_log_samples_counted(log_path, len(sample_ids))
+
+                for id, epoch in sample_ids:
+                    with zip_file.open(f"samples/{id}_epoch_{epoch}.json", "r") as f:
+                        sample = EvalSample.model_validate_json(f.read())
+                        db_sample = DBEvalSample.from_inspect(sample, log_uuid)
+                        session.add(db_sample)
+                        for message_index, msg in enumerate(sample.messages):
+                            db_msg = DBChatMessage.from_inspect(
+                                msg,
+                                sample_uuid=db_sample.db_uuid,
+                                log_uuid=log_uuid,
+                                index_in_sample=message_index,
+                            )
+                            session.add(db_msg)
+                        progress.on_log_sample_completed(
+                            log_path,
+                            str(sample.id),
+                            sample.epoch,
+                            "success",
+                            "Inserted",
+                        )
+            session.commit()
+            progress.on_log_completed(log_path, "success", "Ingested")
+        except Exception as e:
+            session.rollback()
+            progress.on_log_completed(log_path, "error", str(e))
 
 
 def load_log_worker(
@@ -207,20 +213,7 @@ def load_log_worker(
         except queue.Empty:
             break
 
-        progress.on_log_started(log_path)
-        try:
-            log_header = read_eval_log(str(log_path), header_only=True)
-            log_uuid = db.insert_log_header(log_header)
-            insert_log_samples(db, progress, log_path, log_uuid)
-            progress.on_log_completed(log_path, "success", f"Inserted {log_path}")
-        except IntegrityError:
-            progress.on_log_completed(
-                log_path, "skipped", f"Log already exists: {log_path}"
-            )
-        except Exception as e:
-            progress.on_log_completed(log_path, "error", str(e))
-        finally:
-            log_queue.task_done()
+        fast_ingest_log(db, progress, log_path)
 
 
 def ingest_logs(

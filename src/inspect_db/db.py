@@ -1,14 +1,72 @@
 from collections.abc import Iterator
+from pathlib import Path
+import re
 from uuid import UUID
-from inspect_ai.log import EvalLog, EvalSample
+import zipfile
+from inspect_ai.log import EvalLog, EvalSample, read_eval_log, read_eval_log_sample
 from sqlalchemy import Engine
 from sqlmodel import SQLModel, String, cast, col, create_engine, Session, func, select
-from typing import Any, Literal
-from contextlib import contextmanager
+from typing import Any, ContextManager, Literal
+from contextlib import contextmanager, nullcontext
+
 from .models import DBEvalLog, DBEvalSample, DBChatMessage
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+class IngestionProgressListener:
+    """Protocol for reporting ingestion progress."""
+
+    def progress(self) -> ContextManager[Any]:
+        """Context manager for progress reporting."""
+        return nullcontext()
+
+    def on_ingestion_started(self, workers: int) -> None:
+        """Called when ingestion starts."""
+        pass
+
+    def on_log_started(self, file_path: Path) -> None:
+        """Called when a file starts being processed."""
+        pass
+
+    def on_log_samples_counted(self, file_path: Path, samples_count: int) -> None:
+        """Called when the header of a file has been read."""
+        pass
+
+    def on_log_sample_completed(
+        self,
+        file_path: Path,
+        sample_id: str,
+        epoch: int,
+        status: Literal["success", "error"],
+        message: str,
+    ) -> None:
+        """Called when a sample of a file has been read."""
+        pass
+
+    def on_log_completed(
+        self,
+        file_path: Path,
+        status: Literal["success", "skipped", "error"],
+        message: str,
+    ) -> None:
+        """Called when a file has been inserted."""
+        pass
+
+    def on_ingestion_complete(self) -> None:
+        """Called when all files have been processed."""
+        pass
+
+
+def _get_log_sample_ids(log_path: Path) -> list[tuple[str, int]]:
+    """Get the sample ids and epochs from a log file."""
+    # format is samples/<id>_epoch_<epoch>.json
+    with zipfile.ZipFile(log_path, "r") as zip_file:
+        pattern = re.compile(r"samples/(.*)_epoch_(\d+).json")
+        files = list(zip_file.namelist())
+        matches = [pattern.match(file) for file in files]
+        return [(match.group(1), int(match.group(2))) for match in matches if match]
 
 
 class EvalDB:
@@ -90,6 +148,38 @@ class EvalDB:
                 session.add(db_msg)
             session.commit()
         return sample_uuid
+
+    def ingest_log(self, log_path: Path, progress: IngestionProgressListener) -> UUID:
+        """Ingest a log into the database.
+
+        Args:
+            log: EvalLog object
+            progress: IngestionProgressListener object
+        """
+        progress.on_log_started(log_path)
+        sample_ids = _get_log_sample_ids(log_path)
+        progress.on_log_samples_counted(log_path, len(sample_ids))
+
+        log_header = read_eval_log(str(log_path), header_only=True)
+        with self.session() as session:
+            db_log = DBEvalLog.from_inspect(log_header)
+            session.add(db_log)
+            for sample_id, epoch in sample_ids:
+                sample = read_eval_log_sample(str(log_path), sample_id, epoch)
+                db_sample = DBEvalSample.from_inspect(sample, db_log.db_uuid)
+                session.add(db_sample)
+                for message_index, msg in enumerate(sample.messages):
+                    db_msg = DBChatMessage.from_inspect(
+                        msg, db_sample.db_uuid, db_log.db_uuid, message_index
+                    )
+                    session.add(db_msg)
+                progress.on_log_sample_completed(
+                    log_path, sample_id, epoch, "success", "Ingested"
+                )
+            session.commit()
+            session.refresh(db_log)
+        progress.on_log_completed(log_path, "success", "Ingested")
+        return db_log.db_uuid
 
     def insert_log_and_samples(
         self, log: EvalLog, session: Session | None = None
