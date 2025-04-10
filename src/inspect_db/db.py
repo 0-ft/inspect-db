@@ -30,6 +30,7 @@ class EvalDB:
     def session(self):
         """Context manager for database sessions."""
         with Session(self.engine) as session:
+            SQLModel.metadata.create_all(self.engine)
             yield session
 
     def insert_log(self, log: EvalLog) -> UUID:

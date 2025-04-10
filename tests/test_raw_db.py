@@ -14,7 +14,6 @@ def test_insert_log(raw_db: EvalDB, sample_eval_log: EvalLog):
         assert db_log is not None
 
         samples = db_log.samples
-        print(samples)
         assert len(samples) == len(sample_eval_log.samples or [])
 
 
@@ -31,21 +30,26 @@ def test_get_db_log(raw_db: EvalDB, sample_eval_log: EvalLog):
     assert db_log.location == sample_eval_log.location
 
 
-def test_get_db_samples(raw_db: EvalDB, sample_eval_log: EvalLog):
+def test_get_db_samples(raw_db: EvalDB, sample_eval_logs: list[EvalLog]):
     """Test retrieving samples for a log."""
-    # First insert a log
-    log_uuid = raw_db.insert_log(sample_eval_log)
+    # First insert logs
+    log_uuids = [raw_db.insert_log(log) for log in sample_eval_logs]
+
+    # Check all samples
+    for sample in raw_db.get_db_samples():
+        print(sample)
 
     # Test getting samples
-    samples = list(raw_db.get_db_samples(log_uuid=log_uuid))
-    assert len(samples) == len(sample_eval_log.samples or [])
+    for sample_eval_log, log_uuid in zip(sample_eval_logs, log_uuids):
+        samples = list(raw_db.get_db_samples(log_uuid=log_uuid))
+        assert len(samples) == len(sample_eval_log.samples or [])
 
-    # Verify sample data
-    for db_sample, original_sample in zip(samples, sample_eval_log.samples or []):
-        assert db_sample.id == str(original_sample.id)
-        assert db_sample.epoch == original_sample.epoch
-        assert db_sample.input == original_sample.input
-        assert db_sample.target == original_sample.target
+        # Verify sample data
+        for db_sample, original_sample in zip(samples, sample_eval_log.samples or []):
+            assert db_sample.id == str(original_sample.id)
+            assert db_sample.epoch == original_sample.epoch
+            assert db_sample.input == original_sample.input
+            assert db_sample.target == original_sample.target
 
 
 def test_get_db_sample(raw_db: EvalDB, sample_eval_log: EvalLog):

@@ -168,6 +168,7 @@ def load_log_worker(
             progress.on_log_started(log_path)
             try:
                 log = read_eval_log(str(log_path))
+                log = EvalLog.model_validate(log)
                 progress.on_log_loaded(log_path, "success", f"Loaded {log_path}")
                 insert_log(db, progress, log_path, log)
             except Exception as e:

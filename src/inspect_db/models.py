@@ -12,6 +12,7 @@ from inspect_ai.scorer import Score
 from inspect_ai.tool import ToolCall, ToolCallError
 from inspect_ai.util import SandboxEnvironmentSpec
 from pydantic import TypeAdapter
+from sqlalchemy import BLOB
 from sqlmodel import JSON, Column, Relationship, SQLModel, Field, TypeDecorator
 from typing import Any, List
 from datetime import datetime
@@ -31,7 +32,7 @@ class MessageRole(str, Enum):
 
 
 class PydanticJson(TypeDecorator):
-    impl = JSON()
+    impl = BLOB()
     cache_ok = True
 
     def __init__(self, pt):
@@ -40,10 +41,26 @@ class PydanticJson(TypeDecorator):
         self.coerce_compared_value = self.impl.coerce_compared_value  # type: ignore
 
     def bind_processor(self, dialect):
-        return lambda value: self.pt.dump_json(value) if value is not None else None
+        def process(value):
+            if value is None:
+                return None
+            try:
+                return self.pt.dump_json(value)
+            except Exception as e:
+                raise ValueError(f"Failed to serialize {value}: {e}") from e
+
+        return process
 
     def result_processor(self, dialect, coltype):
-        return lambda value: self.pt.validate_json(value) if value is not None else None
+        def process(value):
+            if value is None:
+                return None
+            try:
+                return self.pt.validate_json(value)
+            except Exception as e:
+                raise ValueError(f"Failed to deserialize {value}: {e}") from e
+
+        return process
 
 
 class DBChatMessage(SQLModel, table=True):

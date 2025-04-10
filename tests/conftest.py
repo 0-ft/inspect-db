@@ -49,6 +49,12 @@ def sample_eval_log(sample_eval_log_path: Path) -> EvalLog:
 
 
 @pytest.fixture
+def sample_eval_logs(sample_eval_log_paths: list[Path]) -> list[EvalLog]:
+    """Load all sample eval logs from the test directory."""
+    return [read_eval_log(str(path)) for path in sample_eval_log_paths]
+
+
+@pytest.fixture
 def raw_db(db_uri: str):
     """Create a temporary database for testing."""
     return EvalDB(db_uri)
@@ -68,14 +74,19 @@ def db_path(temp_dir: Path) -> Path:
     return temp_dir / "test.db"
 
 
-@pytest.fixture
-def db_uri(db_path: Path) -> str:
+@pytest.fixture(
+    params=[
+        "sqlite",
+        "duckdb",
+    ]
+)
+def db_uri(request, db_path: Path) -> str:
     """Create a SQLAlchemy URL for the test database.
 
-    Note: For testing purposes we use SQLite, but the library supports any SQLAlchemy-compatible database.
-    In production, you should use a proper database like PostgreSQL.
+    Tests will run once for each database type.
+    For file-based databases, uses the temp_dir.
     """
-    return f"sqlite:///{db_path}"
+    return f"{request.param}:///{db_path}"
 
 
 @pytest.fixture
