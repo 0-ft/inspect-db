@@ -17,7 +17,7 @@ from typing import Any, List
 from datetime import datetime
 import uuid
 from enum import Enum
-from inspect_ai.log import EvalError, EvalSample, Event, EvalSampleLimit
+from inspect_ai.log import EvalError, EvalLog, EvalSample, Event, EvalSampleLimit
 from uuid import UUID
 
 
@@ -243,3 +243,9 @@ class DBEvalLog(SQLModel, table=True):
 
     # Relationships
     samples: List["DBEvalSample"] = Relationship(back_populates="log")
+
+    @classmethod
+    def from_inspect(cls, log: EvalLog) -> "DBEvalLog":
+        return cls(
+            location=log.location,
+        )

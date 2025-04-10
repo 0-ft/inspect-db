@@ -12,7 +12,7 @@ A fast database for ingesting and querying Inspect eval runs.
 - Parallelized ingestion of eval logs to extract and store log headers, samples, messages, scores, and metadata
 - Data model should reflect inspect-ai classes as much as possible
   - `EvalLog` -> `DBEvalLog`
-  - `EvalSample` -> `DBEvalSample` + `list[DBChatMessage]`
+  - `EvalSample` -> `DBEvalSample`
   - `ChatMessage` -> `DBChatMessage`
 - Consistent UUIDs for each entity
 - `uv` dependency management
@@ -24,3 +24,4 @@ A fast database for ingesting and querying Inspect eval runs.
   - `EvalDB.get_messages(self, sample_uuid: str, role: str | None = None) -> Sequence[ChatMessage]`
   - `EvalDB.get_sample(self, sample_uuid: str) -> EvalSample`
   - `EvalDB.get_log(self, log_uuid: str) -> EvalLog`
+

@@ -1,17 +1,16 @@
 from contextlib import nullcontext
 from pathlib import Path
-from glob import glob
 from typing import ContextManager, Literal, Optional, Dict, Any, Protocol
 import queue
 from concurrent.futures import ThreadPoolExecutor
-from inspect_ai.log import read_eval_log
+from inspect_ai.log import EvalLog, read_eval_log
 from .db import EvalDB
 from sqlmodel import select, func
 from .models import DBEvalLog, DBEvalSample, DBChatMessage
 from sqlalchemy.exc import IntegrityError
 
 
-class IngestionProgressListener[FileId](Protocol):
+class IngestionProgressListener(Protocol):
     """Protocol for reporting ingestion progress."""
 
     def progress(self) -> ContextManager[Any]:
@@ -26,7 +25,7 @@ class IngestionProgressListener[FileId](Protocol):
         """
         ...
 
-    def on_file_started(self, file_path: Path) -> FileId:
+    def on_log_started(self, file_path: Path) -> None:
         """Called when a file starts being processed.
 
         Args:
@@ -37,9 +36,9 @@ class IngestionProgressListener[FileId](Protocol):
         """
         ...
 
-    def on_file_finished(
+    def on_log_loaded(
         self,
-        file_id: FileId,
+        file_path: Path,
         status: Literal["success", "skipped", "error"],
         message: str,
     ) -> None:
@@ -51,6 +50,14 @@ class IngestionProgressListener[FileId](Protocol):
             message: Description of the outcome
         """
         ...
+
+    def on_log_completed(
+        self,
+        file_path: Path,
+        status: Literal["success", "skipped", "error"],
+        message: str,
+    ) -> None:
+        """Called when a file has been inserted."""
 
     def on_ingestion_complete(self) -> None:
         """Called when all files have been processed."""
@@ -66,11 +73,14 @@ class NullProgressListener(IngestionProgressListener):
     def on_ingestion_started(self, workers: int) -> None:
         pass
 
-    def on_file_started(self, file_path: Path) -> Any:
+    def on_log_started(self, file_path: Path) -> Any:
         return None
 
-    def on_file_finished(
-        self, file_id: Any, status: Literal["success", "skipped", "error"], message: str
+    def on_log_loaded(
+        self,
+        file_path: Path,
+        status: Literal["success", "skipped", "error"],
+        message: str,
     ) -> None:
         pass
 
@@ -148,63 +158,63 @@ def get_db_stats(database_uri: str) -> Dict[str, Any]:
         }
 
 
-def process_eval_file(
-    eval_file: Path, db: EvalDB, progress: IngestionProgressListener
-) -> bool:
-    """Process a single eval file and insert it into the database.
-
-    Args:
-        eval_file: Path to the eval file
-        db: RawEvalDB instance
-        progress: Progress listener
-
-    Returns:
-        Tuple of (success, message) where success is True if the file was processed successfully
-        and message describes the outcome
-    """
-    file_id = progress.on_file_started(eval_file)
+def insert_log(
+    db: EvalDB, progress: IngestionProgressListener, log_path: Path, log: EvalLog
+):
     try:
-        log = read_eval_log(str(eval_file))
-        log_uuid = db.insert_log(log)
-        progress.on_file_finished(
-            file_id, "success", f"Ingested {eval_file.name} ({log_uuid})"
-        )
-        return True
+        with db.session() as session:
+            db_log = DBEvalLog.from_inspect(log)
+            session.add(db_log)
+
+            for sample in log.samples or []:
+                db_sample = DBEvalSample.from_inspect(sample, db_log.db_uuid)
+                session.add(db_sample)
+
+                for index_in_sample, message in enumerate(sample.messages or []):
+                    db_message = DBChatMessage.from_inspect(
+                        message, db_sample.db_uuid, index_in_sample
+                    )
+                    session.add(db_message)
+            session.commit()
+            progress.on_log_completed(log_path, "success", f"Inserted {log_path}")
     except IntegrityError:
-        progress.on_file_finished(
-            file_id, "skipped", f"Skipped {eval_file.name} (already exists)"
+        progress.on_log_completed(
+            log_path, "skipped", f"Log already exists: {log_path}"
         )
-        return False
     except Exception as e:
-        progress.on_file_finished(
-            file_id, "error", f"Error processing {eval_file.name}: {str(e)}"
-        )
-        return False
+        progress.on_log_completed(log_path, "error", str(e))
 
 
-def worker(q: queue.Queue, db: EvalDB, progress: IngestionProgressListener):
-    """Worker thread that processes eval files from the queue.
+def load_log_worker(
+    log_queue: queue.Queue[Path], db: EvalDB, progress: IngestionProgressListener
+):
+    """Worker thread that processes eval files from the queue and puts them in the insert queue.
 
     Args:
-        q: Queue containing eval files
-        db: RawEvalDB instance
+        log_queue: Queue containing eval files to load
+        db: Database instance
         progress: Progress listener
-
-    Returns:
-        Tuple of (success_count, skipped_count, error_count)
     """
     while True:
         try:
-            eval_file = q.get_nowait()
-            process_eval_file(eval_file, db, progress)
-            q.task_done()
+            log_path = log_queue.get_nowait()
+            progress.on_log_started(log_path)
+            try:
+                log = read_eval_log(str(log_path))
+                progress.on_log_loaded(log_path, "success", f"Loaded {log_path}")
+                insert_log(db, progress, log_path, log)
+            except Exception as e:
+                progress.on_log_loaded(log_path, "error", str(e))
+                progress.on_log_completed(log_path, "error", str(e))
+            finally:
+                log_queue.task_done()
         except queue.Empty:
             break
 
 
 def ingest_eval_files(
     database_uri: str,
-    eval_paths: list[str | Path],
+    eval_paths: list[str] | list[Path],
     workers: int = 4,
     progress_listener: Optional[IngestionProgressListener] = None,
 ) -> None:
@@ -213,40 +223,39 @@ def ingest_eval_files(
     Args:
         database_uri: SQLAlchemy database URI (e.g. 'sqlite:///eval.db')
         eval_paths: List of glob patterns matching .eval files
-        workers: Number of worker threads
+        workers: Number of worker threads for log loading
         progress_listener: Optional progress listener for custom progress display
     """
     # Initialize database
     db = EvalDB(database_uri)
 
-    # Find all eval files
-    eval_files = []
-    for path in eval_paths:
-        eval_files.extend(
-            [Path(f) for f in glob(str(path), recursive=True) if f.endswith(".eval")]
-        )
+    eval_paths = [Path(path) for path in eval_paths]
 
-    if not eval_files:
+    if not eval_paths:
         print("No .eval files found matching the given patterns")
         return
 
-    # Create queue and worker pool
-    q = queue.Queue()
-    for eval_file in eval_files:
-        q.put(eval_file)
+    # Create queues
+    log_queue = queue.Queue[Path]()
+
+    # Fill log queue
+    for eval_file in eval_paths:
+        log_queue.put(eval_file)
 
     # Start workers
     progress_listener = progress_listener or NullProgressListener()
-
     progress_listener.on_ingestion_started(workers)
 
     with progress_listener.progress():
+        # Start log loading workers
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = [
-                executor.submit(worker, q, db, progress_listener)
+            load_futures = [
+                executor.submit(load_log_worker, log_queue, db, progress_listener)
                 for _ in range(workers)
             ]
-            for future in futures:
+
+            # Wait for all workers to complete
+            for future in load_futures:
                 future.result()
 
     # Show summary

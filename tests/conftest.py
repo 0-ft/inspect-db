@@ -17,6 +17,22 @@ def temp_dir():
 
 
 @pytest.fixture
+def sample_eval_log_paths() -> list[Path]:
+    """Get paths to all sample eval log files."""
+    return [
+        Path(__file__).parent
+        / "sample_logs"
+        / "2025-03-28T13-47-14+00-00_gpqa-diamond_4dLhGxA36WnSauR29xehc7.eval",
+        Path(__file__).parent
+        / "sample_logs"
+        / "2025-04-10T09-09-00+01-00_commonsense-qa_BvqVogcx7wZWDpvRYnci6b.eval",
+        Path(__file__).parent
+        / "sample_logs"
+        / "2025-03-28T23-01-38+00-00_agentharm_Nxk5Uxvp8fxJ6ecWsUah43.eval",
+    ]
+
+
+@pytest.fixture
 def sample_eval_log_path() -> Path:
     """Get the path to a sample eval log file."""
     return (
@@ -67,8 +83,5 @@ def mock_progress_listener(mocker: MockerFixture):
     """Create a mock progress listener for testing."""
     mock = mocker.Mock(spec=IngestionProgressListener)
 
-    mock.on_file_started.return_value = (
-        "mock_file_id"  # Return a consistent ID for testing
-    )
     mock.progress.return_value = nullcontext()
     return mock
