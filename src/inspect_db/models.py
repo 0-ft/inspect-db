@@ -13,22 +13,12 @@ from inspect_ai.tool import ToolCall, ToolCallError
 from inspect_ai.util import SandboxEnvironmentSpec
 from pydantic import TypeAdapter
 from sqlalchemy import BLOB
-from sqlmodel import JSON, Column, Relationship, SQLModel, Field, TypeDecorator
-from typing import Any, List
+from sqlmodel import JSON, Column, Relationship, SQLModel, Field, String, TypeDecorator
+from typing import Any, List, Literal
 from datetime import datetime
 import uuid
-from enum import Enum
 from inspect_ai.log import EvalError, EvalLog, EvalSample, Event, EvalSampleLimit
 from uuid import UUID
-
-
-class MessageRole(str, Enum):
-    """Enum for chat message roles."""
-
-    SYSTEM = "system"
-    USER = "user"
-    ASSISTANT = "assistant"
-    TOOL = "tool"
 
 
 class PydanticJson(TypeDecorator):
@@ -69,14 +59,16 @@ class DBChatMessage(SQLModel, table=True):
     # Database fields
     db_uuid: UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     db_sample_uuid: UUID = Field(foreign_key="dbevalsample.db_uuid")
-
+    db_log_uuid: UUID = Field(foreign_key="dbevallog.db_uuid")
     # Relationships
     sample: "DBEvalSample" = Relationship(back_populates="messages")
 
     # Inspect fields
     id: str | None = Field(default=None)  # Original inspect-ai message ID
     index_in_sample: int
-    role: MessageRole
+    role: Literal["system", "user", "assistant", "tool"] = Field(
+        sa_column=Column(String)
+    )
     content: str | list[Content] = Field(
         sa_column=Column(PydanticJson(str | list[Content]))
     )
@@ -97,13 +89,18 @@ class DBChatMessage(SQLModel, table=True):
 
     @classmethod
     def from_inspect(
-        cls, message: ChatMessage, sample_uuid: UUID, index_in_sample: int
+        cls,
+        message: ChatMessage,
+        sample_uuid: UUID,
+        log_uuid: UUID,
+        index_in_sample: int,
     ) -> "DBChatMessage":
         return cls(
             id=message.id,
             db_sample_uuid=sample_uuid,
             index_in_sample=index_in_sample,
-            role=MessageRole(message.role),
+            db_log_uuid=log_uuid,
+            role=message.role,
             content=message.content,
             source=message.source,
             model=message.model if isinstance(message, ChatMessageAssistant) else None,
@@ -121,19 +118,19 @@ class DBChatMessage(SQLModel, table=True):
         assert (
             self.source is None or self.source == "input" or self.source == "generate"
         )
-        if self.role == MessageRole.SYSTEM:
+        if self.role == "system":
             return ChatMessageSystem(
                 id=self.id,
                 content=self.content,
                 source=self.source,
             )
-        elif self.role == MessageRole.USER:
+        elif self.role == "user":
             return ChatMessageUser(
                 id=self.id,
                 content=self.content,
                 source=self.source,
             )
-        elif self.role == MessageRole.ASSISTANT:
+        elif self.role == "assistant":
             return ChatMessageAssistant(
                 id=self.id,
                 content=self.content,
@@ -141,7 +138,7 @@ class DBChatMessage(SQLModel, table=True):
                 tool_calls=self.tool_calls,
                 source=self.source,
             )
-        elif self.role == MessageRole.TOOL:
+        elif self.role == "tool":
             return ChatMessageTool(
                 id=self.id,
                 content=self.content,

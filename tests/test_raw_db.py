@@ -1,6 +1,6 @@
 from inspect_ai.log import EvalLog
 from inspect_db.db import EvalDB
-from inspect_db.models import DBEvalLog, MessageRole
+from inspect_db.models import DBEvalLog
 
 
 def test_insert_log(raw_db: EvalDB, sample_eval_log: EvalLog):
@@ -88,13 +88,13 @@ def test_get_db_messages(raw_db: EvalDB, sample_eval_log: EvalLog):
     assistant_messages = list(
         raw_db.get_db_messages(sample_uuid=sample_uuid, role="assistant")
     )
-    assert all(msg.role == MessageRole.ASSISTANT for msg in assistant_messages)
+    assert all(msg.role == "assistant" for msg in assistant_messages)
 
     # Verify message data
     original_sample = sample_eval_log.samples[0] if sample_eval_log.samples else None
     if original_sample:
         for db_msg, original_msg in zip(messages, original_sample.messages):
-            assert db_msg.role == MessageRole(original_msg.role)
+            assert db_msg.role == original_msg.role
             assert db_msg.content == original_msg.content
             assert db_msg.index_in_sample == original_sample.messages.index(
                 original_msg

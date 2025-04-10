@@ -2,10 +2,10 @@ from collections.abc import Iterator
 from uuid import UUID
 from inspect_ai.log import EvalLog
 from sqlalchemy import Engine
-from sqlmodel import SQLModel, create_engine, Session, func, select
+from sqlmodel import SQLModel, String, cast, col, create_engine, Session, func, select
 from typing import Any, Literal
 from contextlib import contextmanager
-from .models import DBEvalLog, DBEvalSample, DBChatMessage, MessageRole
+from .models import DBEvalLog, DBEvalSample, DBChatMessage
 import logging
 
 logger = logging.getLogger(__name__)
@@ -61,7 +61,9 @@ class EvalDB:
 
                 # Insert messages
                 for index, msg in enumerate(sample.messages):
-                    db_msg = DBChatMessage.from_inspect(msg, db_sample.db_uuid, index)
+                    db_msg = DBChatMessage.from_inspect(
+                        msg, db_sample.db_uuid, log_uuid, index
+                    )
                     session.add(db_msg)
 
             session.commit()
@@ -107,6 +109,7 @@ class EvalDB:
         log_uuid: UUID | None = None,
         sample_uuid: UUID | None = None,
         role: Literal["system", "user", "assistant", "tool"] | None = None,
+        pattern: str | None = None,
     ) -> Iterator[DBChatMessage]:
         """Get database messages for a sample, optionally filtered by role.
 
@@ -117,13 +120,21 @@ class EvalDB:
         Returns:
             List of DBChatMessage objects
         """
-        query = select(DBChatMessage).order_by(DBChatMessage.index_in_sample)
+        query = select(DBChatMessage).order_by(
+            col(DBChatMessage.db_log_uuid),
+            col(DBChatMessage.db_sample_uuid),
+            col(DBChatMessage.index_in_sample),
+        )
         if log_uuid:
-            query = query.where(DBChatMessage.db_sample_uuid == sample_uuid)
+            query = query.where(col(DBChatMessage.sample.db_log_uuid) == log_uuid)
         if sample_uuid:
-            query = query.where(DBChatMessage.db_sample_uuid == sample_uuid)
+            query = query.where(col(DBChatMessage.db_sample_uuid) == sample_uuid)
         if role:
-            query = query.where(DBChatMessage.role == MessageRole(role))
+            query = query.where(DBChatMessage.role == role)
+        if pattern:
+            query = query.where(
+                cast(col(DBChatMessage.content), String).like(f"%{pattern}%")
+            )  # TODO: duckdb-engine doesn't seem to support regexp_match
         with self.session() as session:
             yield from session.exec(query)
 
