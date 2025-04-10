@@ -161,40 +161,45 @@ def fast_ingest_log(
             progress.on_log_completed(log_path, "skipped", "Log already exists")
             return
 
-        try:
-            with zipfile.ZipFile(log_path, "r") as zip_file:
-                files = list(zip_file.namelist())
-                matches = [sample_file_pattern.match(file) for file in files]
-                sample_ids = [
-                    (match.group(1), int(match.group(2))) for match in matches if match
-                ]
-                progress.on_log_samples_counted(log_path, len(sample_ids))
+    try:
+        with zipfile.ZipFile(log_path, "r") as zip_file:
+            files = list(zip_file.namelist())
+            matches = [sample_file_pattern.match(file) for file in files]
+            sample_ids = [
+                (match.group(1), int(match.group(2))) for match in matches if match
+            ]
+            progress.on_log_samples_counted(log_path, len(sample_ids))
 
-                for id, epoch in sample_ids:
-                    with zip_file.open(f"samples/{id}_epoch_{epoch}.json", "r") as f:
-                        sample = EvalSample.model_validate_json(f.read())
-                        db_sample = DBEvalSample.from_inspect(sample, log_uuid)
-                        session.add(db_sample)
-                        for message_index, msg in enumerate(sample.messages):
-                            db_msg = DBChatMessage.from_inspect(
-                                msg,
-                                sample_uuid=db_sample.db_uuid,
-                                log_uuid=log_uuid,
-                                index_in_sample=message_index,
-                            )
-                            session.add(db_msg)
-                        progress.on_log_sample_completed(
-                            log_path,
-                            str(sample.id),
-                            sample.epoch,
-                            "success",
-                            "Inserted",
+            db_msgs = []
+            db_samples = []
+            for id, epoch in sample_ids:
+                with zip_file.open(f"samples/{id}_epoch_{epoch}.json", "r") as f:
+                    sample = EvalSample.model_validate_json(f.read())
+                    db_sample = DBEvalSample.from_inspect(sample, log_uuid)
+                    db_samples.append(db_sample)
+                    db_msgs += [
+                        DBChatMessage.from_inspect(
+                            msg,
+                            sample_uuid=db_sample.db_uuid,
+                            log_uuid=log_uuid,
+                            index_in_sample=message_index,
                         )
-            session.commit()
-            progress.on_log_completed(log_path, "success", "Ingested")
-        except Exception as e:
-            session.rollback()
-            progress.on_log_completed(log_path, "error", str(e))
+                        for message_index, msg in enumerate(sample.messages)
+                    ]
+                    progress.on_log_sample_completed(
+                        log_path,
+                        str(sample.id),
+                        sample.epoch,
+                        "success",
+                        "Inserted",
+                    )
+            with db.session() as session:
+                session.add_all(db_msgs)
+                session.add_all(db_samples)
+                session.commit()
+        progress.on_log_completed(log_path, "success", "Ingested")
+    except Exception as e:
+        progress.on_log_completed(log_path, "error", str(e))
 
 
 def load_log_worker(
