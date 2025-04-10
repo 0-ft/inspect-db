@@ -33,7 +33,7 @@ class EvalDB:
             SQLModel.metadata.create_all(self.engine)
             yield session
 
-    def insert_log_header(self, log: EvalLog) -> UUID:
+    def insert_log_header(self, log: EvalLog, session: Session | None = None) -> UUID:
         """Insert a log header into the database.
 
         Args:
@@ -46,7 +46,7 @@ class EvalDB:
         db_log = DBEvalLog.from_inspect(log)
 
         # Insert log header
-        with self.session() as session:
+        with session or self.session() as session:
             session.add(db_log)
             session.commit()
             session.refresh(db_log)  # Ensure we have the UUID
@@ -54,7 +54,9 @@ class EvalDB:
 
         return log_uuid
 
-    def insert_log_sample(self, sample: EvalSample, log_uuid: UUID) -> UUID:
+    def insert_sample(
+        self, sample: EvalSample, log_uuid: UUID, session: Session | None = None
+    ) -> UUID:
         """Insert a log sample into the database.
 
         Args:
@@ -64,7 +66,7 @@ class EvalDB:
             The UUID of the inserted log sample
         """
         db_sample = DBEvalSample.from_inspect(sample, log_uuid)
-        with self.session() as session:
+        with session or self.session() as session:
             session.add(db_sample)
             session.commit()
             session.refresh(db_sample)  # Ensure we have the UUID
@@ -72,42 +74,50 @@ class EvalDB:
 
         return sample_uuid
 
-    def insert_log_and_samples(self, log: EvalLog) -> UUID:
+    def insert_sample_and_messages(
+        self, sample: EvalSample, log_uuid: UUID, session: Session | None = None
+    ) -> UUID:
+        """Insert a sample and its associated messages into the database.
+
+        Args:
+            sample: EvalSample object
+            log_uuid: UUID of the log
+        """
+        sample_uuid = self.insert_sample(sample, log_uuid, session=session)
+        with session or self.session() as session:
+            for index, msg in enumerate(sample.messages):
+                db_msg = DBChatMessage.from_inspect(msg, sample_uuid, log_uuid, index)
+                session.add(db_msg)
+            session.commit()
+        return sample_uuid
+
+    def insert_log_and_samples(
+        self, log: EvalLog, session: Session | None = None
+    ) -> UUID:
         """Insert a log and its associated samples and messages into the database.
 
         Args:
-            log_data: Dictionary containing log data
+            log: EvalLog object
 
         Returns:
             The UUID of the inserted log
         """
         # Create database models
-        db_log = DBEvalLog.from_inspect(log)
+        log_uuid = self.insert_log_header(log, session=session)
 
-        # Insert log and samples
-        with self.session() as session:
-            session.add(db_log)
-            session.commit()
-            session.refresh(db_log)  # Ensure we have the UUID
-            log_uuid = db_log.db_uuid
-
+        # Insert samples and messages
+        with session or self.session() as session:
             # Insert samples and messages
             for sample in log.samples or []:
-                db_sample = DBEvalSample.from_inspect(sample, log_uuid)
-                session.add(db_sample)
-
-                # Insert messages
-                for index, msg in enumerate(sample.messages):
-                    db_msg = DBChatMessage.from_inspect(
-                        msg, db_sample.db_uuid, log_uuid, index
-                    )
-                    session.add(db_msg)
+                self.insert_sample_and_messages(sample, log_uuid, session=session)
 
             session.commit()
 
         return log_uuid
 
-    def get_db_logs(self, log_uuid: UUID | None = None) -> Iterator[DBEvalLog]:
+    def get_db_logs(
+        self, log_uuid: UUID | None = None, session: Session | None = None
+    ) -> Iterator[DBEvalLog]:
         """Get all logs in the database.
 
         Args:
@@ -119,7 +129,7 @@ class EvalDB:
         query = select(DBEvalLog)
         if log_uuid:
             query = query.where(DBEvalLog.db_uuid == log_uuid)
-        with self.session() as session:
+        with session or self.session() as session:
             yield from session.exec(query)
 
     def get_db_samples(

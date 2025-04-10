@@ -7,7 +7,6 @@ from sqlmodel import select
 
 
 def test_ingest_single_file(
-    temp_dir: Path,
     sample_eval_log_path: Path,
     db_uri: str,
     mock_progress_listener,
@@ -29,7 +28,6 @@ def test_ingest_single_file(
     # Verify progress listener was called correctly
     mock_progress_listener.on_ingestion_started.assert_called_once_with(1)
     mock_progress_listener.on_log_started.assert_called_once_with(sample_eval_log_path)
-    mock_progress_listener.on_log_loaded.assert_called_once()
     mock_progress_listener.on_log_completed.assert_called_once()
     mock_progress_listener.on_ingestion_complete.assert_called_once()
 
@@ -110,8 +108,8 @@ def test_ingest_invalid_file(
     )
 
     # Verify error was reported
-    mock_progress_listener.on_log_loaded.assert_called_once()
-    error_call = mock_progress_listener.on_log_loaded.call_args
+    mock_progress_listener.on_log_completed.assert_called_once()
+    error_call = mock_progress_listener.on_log_completed.call_args
     assert "error" in error_call[0][1]
 
     # Verify nothing was inserted
@@ -137,7 +135,6 @@ def test_ingest_no_files(
     # Verify no progress events were called
     mock_progress_listener.on_ingestion_started.assert_not_called()
     mock_progress_listener.on_log_started.assert_not_called()
-    mock_progress_listener.on_log_loaded.assert_not_called()
     mock_progress_listener.on_log_completed.assert_not_called()
     mock_progress_listener.on_ingestion_complete.assert_not_called()
 

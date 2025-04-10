@@ -11,6 +11,7 @@ dependencies = [
     "duckdb-engine>=0.17.0",
     "inspect-ai>=0.3.85",
     "pydantic>=2.11.3",
+    "pytest-xdist[psutil]>=3.6.1",
     "rich>=13.9.4",
     "sqlmodel>=0.0.24",
 ]
@@ -25,7 +26,7 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = "-v -s"
+addopts = "-v -s -n auto"
 
 [dependency-groups]
 dev = [

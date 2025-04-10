@@ -6,7 +6,7 @@ from inspect_db.models import DBEvalLog
 def test_insert_log(raw_db: EvalDB, sample_eval_log: EvalLog):
     """Test inserting a log with samples and messages."""
     # print("output glarb", json.dumps(sample_log.samples[0].output))
-    log_uuid = raw_db.insert_log(sample_eval_log)
+    log_uuid = raw_db.insert_log_and_samples(sample_eval_log)
 
     # Verify log was inserted
     with raw_db.session() as session:
@@ -20,7 +20,7 @@ def test_insert_log(raw_db: EvalDB, sample_eval_log: EvalLog):
 def test_get_db_log(raw_db: EvalDB, sample_eval_log: EvalLog):
     """Test retrieving a log by UUID."""
     # First insert a log
-    log_uuid = raw_db.insert_log(sample_eval_log)
+    log_uuid = raw_db.insert_log_and_samples(sample_eval_log)
 
     # Test getting the log
     db_logs = list(raw_db.get_db_logs(log_uuid=log_uuid))
@@ -33,7 +33,7 @@ def test_get_db_log(raw_db: EvalDB, sample_eval_log: EvalLog):
 def test_get_db_samples(raw_db: EvalDB, sample_eval_logs: list[EvalLog]):
     """Test retrieving samples for a log."""
     # First insert logs
-    log_uuids = [raw_db.insert_log(log) for log in sample_eval_logs]
+    log_uuids = [raw_db.insert_log_and_samples(log) for log in sample_eval_logs]
 
     # Check all samples
     for sample in raw_db.get_db_samples():
@@ -55,7 +55,7 @@ def test_get_db_samples(raw_db: EvalDB, sample_eval_logs: list[EvalLog]):
 def test_get_db_sample(raw_db: EvalDB, sample_eval_log: EvalLog):
     """Test retrieving a single sample by UUID."""
     # First insert a log
-    log_uuid = raw_db.insert_log(sample_eval_log)
+    log_uuid = raw_db.insert_log_and_samples(sample_eval_log)
 
     # Get all samples to get a sample UUID
     samples = list(raw_db.get_db_samples(log_uuid, None))
@@ -73,7 +73,7 @@ def test_get_db_sample(raw_db: EvalDB, sample_eval_log: EvalLog):
 def test_get_db_messages(raw_db: EvalDB, sample_eval_log: EvalLog):
     """Test retrieving messages for a sample."""
     # First insert a log
-    log_uuid = raw_db.insert_log(sample_eval_log)
+    log_uuid = raw_db.insert_log_and_samples(sample_eval_log)
 
     # Get a sample to get its UUID
     samples = list(raw_db.get_db_samples(log_uuid=log_uuid))
@@ -103,7 +103,7 @@ def test_get_db_messages(raw_db: EvalDB, sample_eval_log: EvalLog):
 
 def test_stats(raw_db: EvalDB, sample_eval_log: EvalLog):
     """Test the stats method."""
-    raw_db.insert_log(sample_eval_log)
+    raw_db.insert_log_and_samples(sample_eval_log)
     stats = raw_db.stats()
     assert stats is not None
     assert stats["log_count"] > 0

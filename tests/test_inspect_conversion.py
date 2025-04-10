@@ -34,7 +34,7 @@ def test_convert_sample(raw_db: EvalDB, sample_eval_log: EvalLog):
     assert sample_eval_log.samples is not None
     assert len(sample_eval_log.samples) > 0
 
-    log_uuid = raw_db.insert_log(sample_eval_log)
+    log_uuid = raw_db.insert_log_and_samples(sample_eval_log)
 
     for orig_sample, as_db_sample in zip(
         sample_eval_log.samples, raw_db.get_db_samples(log_uuid=log_uuid)
