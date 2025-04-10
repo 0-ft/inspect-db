@@ -95,3 +95,19 @@ def test_get_db_messages(raw_db: EvalDB, sample_eval_log: EvalLog):
             assert db_msg.index_in_sample == original_sample.messages.index(
                 original_msg
             )
+
+
+def test_stats(raw_db: EvalDB, sample_eval_log: EvalLog):
+    """Test the stats method."""
+    raw_db.insert_log(sample_eval_log)
+    stats = raw_db.stats()
+    assert stats is not None
+    assert stats["log_count"] > 0
+    assert stats["sample_count"] > 0
+    assert stats["message_count"] > 0
+    assert stats["avg_samples_per_log"] > 0
+    assert stats["avg_messages_per_sample"] > 0
+    assert stats["role_distribution"] is not None
+    assert len(stats["role_distribution"]) > 0
+    assert stats["role_distribution"]["system"] > 0
+    assert stats["role_distribution"]["user"] > 0

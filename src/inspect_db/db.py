@@ -2,8 +2,8 @@ from collections.abc import Iterator
 from uuid import UUID
 from inspect_ai.log import EvalLog
 from sqlalchemy import Engine
-from sqlmodel import SQLModel, create_engine, Session, select
-from typing import Literal
+from sqlmodel import SQLModel, create_engine, Session, func, select
+from typing import Any, Literal
 from contextlib import contextmanager
 from .models import DBEvalLog, DBEvalSample, DBChatMessage, MessageRole
 import logging
@@ -125,3 +125,62 @@ class EvalDB:
             query = query.where(DBChatMessage.role == MessageRole(role))
         with self.session() as session:
             yield from session.exec(query)
+
+    def stats(self) -> dict[str, Any]:
+        with self.session() as session:
+            # Count logs
+            log_count = session.exec(select(func.count()).select_from(DBEvalLog)).one()
+
+            # Count samples
+            sample_count = session.exec(
+                select(func.count()).select_from(DBEvalSample)
+            ).one()
+
+            # Count messages
+            message_count = session.exec(
+                select(func.count()).select_from(DBChatMessage)
+            ).one()
+
+            # Get average samples per log
+            avg_samples = (
+                session.exec(
+                    select(
+                        func.avg(
+                            select(func.count())
+                            .select_from(DBEvalSample)
+                            .where(DBEvalSample.db_log_uuid == DBEvalLog.db_uuid)
+                            .scalar_subquery()
+                        )
+                    )
+                ).one()
+                or 0
+            )
+
+            # Get average messages per sample
+            avg_messages = (
+                session.exec(
+                    select(
+                        func.avg(
+                            select(func.count())
+                            .select_from(DBChatMessage)
+                            .where(DBChatMessage.db_sample_uuid == DBEvalSample.db_uuid)
+                            .scalar_subquery()
+                        )
+                    )
+                ).one()
+                or 0
+            )
+
+            # Get message role distribution
+            role_counts = session.exec(
+                select(DBChatMessage.role, func.count()).group_by(DBChatMessage.role)
+            ).all()
+
+            return {
+                "log_count": log_count,
+                "sample_count": sample_count,
+                "message_count": message_count,
+                "avg_samples_per_log": round(avg_samples, 2),
+                "avg_messages_per_sample": round(avg_messages, 2),
+                "role_distribution": dict(role_counts),
+            }

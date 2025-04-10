@@ -1,6 +1,6 @@
 from inspect_ai.log import read_eval_log
 from pathlib import Path
-from inspect_db.ingest import ingest_eval_files, NullProgressListener
+from inspect_db.ingest import ingest_logs
 from inspect_db.db import EvalDB
 from inspect_db.models import DBChatMessage, DBEvalLog, DBEvalSample
 from sqlmodel import select
@@ -19,7 +19,7 @@ def test_ingest_single_file(
     n_messages = sum(len(sample.messages or []) for sample in log.samples or [])
 
     # Ingest the file
-    ingest_eval_files(
+    ingest_logs(
         database_uri=db_uri,
         path_patterns=[str(sample_eval_log_path)],
         workers=1,
@@ -51,7 +51,7 @@ def test_ingest_parallel(
 ):
     """Test parallel ingestion with multiple workers."""
     # Ingest with multiple workers
-    ingest_eval_files(
+    ingest_logs(
         database_uri=db_uri,
         path_patterns=[str(path) for path in sample_eval_log_paths],
         workers=2,
@@ -71,7 +71,7 @@ def test_ingest_duplicate(
 ):
     """Test handling of duplicate log files."""
     # Ingest the same file twice
-    ingest_eval_files(
+    ingest_logs(
         database_uri=db_uri,
         path_patterns=[str(sample_eval_log_path), str(sample_eval_log_path)],
         workers=1,
@@ -102,7 +102,7 @@ def test_ingest_invalid_file(
     invalid_path.write_text("not a valid eval file")
 
     # Ingest the invalid file
-    ingest_eval_files(
+    ingest_logs(
         database_uri=db_uri,
         path_patterns=[str(invalid_path)],
         workers=1,
@@ -127,7 +127,7 @@ def test_ingest_no_files(
 ):
     """Test handling when no files are found."""
     # Try to ingest non-existent files
-    ingest_eval_files(
+    ingest_logs(
         database_uri=db_uri,
         path_patterns=["nonexistent/*.eval"],
         workers=1,
@@ -149,11 +149,11 @@ def test_ingest_null_progress_listener(
 ):
     """Test that ingestion works with null progress listener."""
     # Ingest with null progress listener
-    ingest_eval_files(
+    ingest_logs(
         database_uri=db_uri,
         path_patterns=[str(sample_eval_log_path)],
         workers=1,
-        progress_listener=NullProgressListener(),
+        progress_listener=None,
     )
 
     # Verify the log was inserted

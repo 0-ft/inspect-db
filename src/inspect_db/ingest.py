@@ -1,22 +1,30 @@
 from contextlib import nullcontext
 from glob import glob
 from pathlib import Path
-from typing import ContextManager, Literal, Optional, Dict, Any, Protocol
+from typing import ContextManager, Literal, Optional, Any
 import queue
 from concurrent.futures import ThreadPoolExecutor
 from inspect_ai.log import EvalLog, read_eval_log
 from .db import EvalDB
-from sqlmodel import select, func
-from .models import DBEvalLog, DBEvalSample, DBChatMessage
 from sqlalchemy.exc import IntegrityError
+from rich.progress import (
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    BarColumn,
+    TaskProgressColumn,
+    TimeRemainingColumn,
+)
+from rich.table import Table
+from rich.console import Console
 
 
-class IngestionProgressListener(Protocol):
+class IngestionProgressListener:
     """Protocol for reporting ingestion progress."""
 
     def progress(self) -> ContextManager[Any]:
         """Context manager for progress reporting."""
-        ...
+        return nullcontext()
 
     def on_ingestion_started(self, workers: int) -> None:
         """Called when ingestion starts.
@@ -24,7 +32,7 @@ class IngestionProgressListener(Protocol):
         Args:
             workers: Number of worker threads
         """
-        ...
+        pass
 
     def on_log_started(self, file_path: Path) -> None:
         """Called when a file starts being processed.
@@ -35,12 +43,12 @@ class IngestionProgressListener(Protocol):
         Returns:
             An identifier for this file's progress tracking
         """
-        ...
+        pass
 
     def on_log_loaded(
         self,
         file_path: Path,
-        status: Literal["success", "skipped", "error"],
+        status: Literal["success", "error"],
         message: str,
     ) -> None:
         """Called when a file has been processed.
@@ -50,7 +58,7 @@ class IngestionProgressListener(Protocol):
             status: Status of the file processing
             message: Description of the outcome
         """
-        ...
+        pass
 
     def on_log_completed(
         self,
@@ -59,125 +67,83 @@ class IngestionProgressListener(Protocol):
         message: str,
     ) -> None:
         """Called when a file has been inserted."""
+        pass
 
     def on_ingestion_complete(self) -> None:
         """Called when all files have been processed."""
-        ...
-
-
-class NullProgressListener(IngestionProgressListener):
-    """Progress listener that does nothing."""
-
-    def progress(self) -> ContextManager[Any]:
-        return nullcontext()
-
-    def on_ingestion_started(self, workers: int) -> None:
         pass
 
-    def on_log_started(self, file_path: Path) -> Any:
-        return None
 
-    def on_log_loaded(
+class RichProgressListener(IngestionProgressListener):
+    """Rich-based implementation of IngestionProgressListener."""
+
+    started_count = 0
+    success_count = 0
+    skipped_count = 0
+    error_count = 0
+    workers = 0
+
+    def __init__(self, console: Console | None = None):
+        self.console = console or Console()
+        self.rich_progress = Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            console=self.console,
+        )
+        self.path_tasks = {}
+
+    def progress(self) -> ContextManager[Any]:
+        return self.rich_progress
+
+    def on_ingestion_started(self, workers: int) -> None:
+        self.workers = workers
+
+    def on_log_started(self, file_path: Path) -> None:
+        """Start tracking progress for a file."""
+        task_id = self.rich_progress.add_task(f"Processing {file_path.name}", total=1)
+        self.path_tasks[file_path] = task_id
+        self.started_count += 1
+
+    def on_log_completed(
         self,
         file_path: Path,
         status: Literal["success", "skipped", "error"],
         message: str,
     ) -> None:
-        pass
+        """Update progress for a completed file."""
+        self.rich_progress.update(
+            self.path_tasks[file_path], advance=1, description=message
+        )
+        if status == "success":
+            self.success_count += 1
+        elif status == "skipped":
+            self.skipped_count += 1
+        elif status == "error":
+            self.error_count += 1
 
     def on_ingestion_complete(self) -> None:
-        pass
-
-
-def get_db_stats(database_uri: str) -> Dict[str, Any]:
-    """Get statistics about the database.
-
-    Args:
-        database_uri: SQLAlchemy database URI
-
-    Returns:
-        Dictionary containing database statistics
-    """
-    db = EvalDB(database_uri)
-
-    with db.session() as session:
-        # Count logs
-        log_count = session.exec(select(func.count()).select_from(DBEvalLog)).one()
-
-        # Count samples
-        sample_count = session.exec(
-            select(func.count()).select_from(DBEvalSample)
-        ).one()
-
-        # Count messages
-        message_count = session.exec(
-            select(func.count()).select_from(DBChatMessage)
-        ).one()
-
-        # Get average samples per log
-        avg_samples = (
-            session.exec(
-                select(
-                    func.avg(
-                        select(func.count())
-                        .select_from(DBEvalSample)
-                        .where(DBEvalSample.db_log_uuid == DBEvalLog.db_uuid)
-                        .scalar_subquery()
-                    )
-                )
-            ).one()
-            or 0
-        )
-
-        # Get average messages per sample
-        avg_messages = (
-            session.exec(
-                select(
-                    func.avg(
-                        select(func.count())
-                        .select_from(DBChatMessage)
-                        .where(DBChatMessage.db_sample_uuid == DBEvalSample.db_uuid)
-                        .scalar_subquery()
-                    )
-                )
-            ).one()
-            or 0
-        )
-
-        # Get message role distribution
-        role_counts = session.exec(
-            select(DBChatMessage.role, func.count()).group_by(DBChatMessage.role)
-        ).all()
-
-        return {
-            "log_count": log_count,
-            "sample_count": sample_count,
-            "message_count": message_count,
-            "avg_samples_per_log": round(avg_samples, 2),
-            "avg_messages_per_sample": round(avg_messages, 2),
-            "role_distribution": dict(role_counts),
-        }
+        """Show ingestion summary."""
+        self.console.print()
+        summary = Table(title="Ingestion Summary")
+        summary.add_column("Metric", style="cyan")
+        summary.add_column("Value", style="green")
+        summary.add_row("Total Files Found", str(self.started_count))
+        summary.add_row("Successfully Ingested", str(self.success_count))
+        summary.add_row("Skipped (Already Exists)", str(self.skipped_count))
+        summary.add_row("Errors", str(self.error_count))
+        summary.add_row("Workers", str(self.workers))
+        self.console.print(summary)
 
 
 def insert_log(
     db: EvalDB, progress: IngestionProgressListener, log_path: Path, log: EvalLog
 ):
     try:
-        with db.session() as session:
-            db_log = DBEvalLog.from_inspect(log)
-            session.add(db_log)
-
-            for sample in log.samples or []:
-                db_sample = DBEvalSample.from_inspect(sample, db_log.db_uuid)
-                session.add(db_sample)
-
-                for index_in_sample, message in enumerate(sample.messages or []):
-                    db_message = DBChatMessage.from_inspect(
-                        message, db_sample.db_uuid, index_in_sample
-                    )
-                    session.add(db_message)
-            session.commit()
-            progress.on_log_completed(log_path, "success", f"Inserted {log_path}")
+        db.insert_log(log)
+        progress.on_log_completed(log_path, "success", f"Inserted {log_path}")
     except IntegrityError:
         progress.on_log_completed(
             log_path, "skipped", f"Log already exists: {log_path}"
@@ -213,7 +179,7 @@ def load_log_worker(
             break
 
 
-def ingest_eval_files(
+def ingest_logs(
     database_uri: str,
     path_patterns: list[str],
     workers: int = 4,
@@ -236,15 +202,13 @@ def ingest_eval_files(
         print("No .eval files found matching the given patterns")
         return
 
-    # Create queues
+    # Create queue
     log_queue = queue.Queue[Path]()
-
-    # Fill log queue
     for eval_path in eval_paths:
         log_queue.put(eval_path)
 
     # Start workers
-    progress_listener = progress_listener or NullProgressListener()
+    progress_listener = progress_listener or RichProgressListener()
     progress_listener.on_ingestion_started(workers)
 
     with progress_listener.progress():
@@ -259,5 +223,4 @@ def ingest_eval_files(
             for future in load_futures:
                 future.result()
 
-    # Show summary
     progress_listener.on_ingestion_complete()
