@@ -1,4 +1,3 @@
-from glob import glob
 from pathlib import Path
 from typing import Any, ContextManager, Literal
 import click
@@ -89,19 +88,19 @@ def cli():
 
 @cli.command()
 @click.argument("database_uri", type=str)
-@click.argument("eval_paths", type=str, nargs=-1)
+@click.argument("path_patterns", type=str, nargs=-1)
 @click.option("--workers", "-w", type=int, default=4, help="Number of worker threads")
 @click.option("--quiet", "-q", is_flag=True, help="Suppress progress output")
-def ingest(database_uri: str, eval_paths: list[str], workers: int, quiet: bool) -> None:
+def ingest(
+    database_uri: str, path_patterns: list[str], workers: int, quiet: bool
+) -> None:
     """Ingest eval files into the database.
 
     DATABASE_URI: SQLAlchemy database URI (e.g. 'sqlite:///eval.db')
-    EVAL_PATHS: One or more glob patterns matching .eval files
+    PATH_PATTERNS: One or more glob patterns matching .eval files
     """
-    eval_paths = [f for path in eval_paths for f in glob(str(path), recursive=True)]
-
     progress_listener = None if quiet else RichProgressListener()
-    ingest_eval_files(database_uri, eval_paths, workers, progress_listener)
+    ingest_eval_files(database_uri, path_patterns, workers, progress_listener)
 
 
 @cli.command()

@@ -21,7 +21,7 @@ def test_ingest_single_file(
     # Ingest the file
     ingest_eval_files(
         database_uri=db_uri,
-        eval_paths=[str(sample_eval_log_path)],
+        path_patterns=[str(sample_eval_log_path)],
         workers=1,
         progress_listener=mock_progress_listener,
     )
@@ -53,7 +53,7 @@ def test_ingest_parallel(
     # Ingest with multiple workers
     ingest_eval_files(
         database_uri=db_uri,
-        eval_paths=sample_eval_log_paths,
+        path_patterns=[str(path) for path in sample_eval_log_paths],
         workers=2,
     )
 
@@ -73,7 +73,7 @@ def test_ingest_duplicate(
     # Ingest the same file twice
     ingest_eval_files(
         database_uri=db_uri,
-        eval_paths=[str(sample_eval_log_path), str(sample_eval_log_path)],
+        path_patterns=[str(sample_eval_log_path), str(sample_eval_log_path)],
         workers=1,
         progress_listener=mock_progress_listener,
     )
@@ -104,7 +104,7 @@ def test_ingest_invalid_file(
     # Ingest the invalid file
     ingest_eval_files(
         database_uri=db_uri,
-        eval_paths=[str(invalid_path)],
+        path_patterns=[str(invalid_path)],
         workers=1,
         progress_listener=mock_progress_listener,
     )
@@ -129,7 +129,7 @@ def test_ingest_no_files(
     # Try to ingest non-existent files
     ingest_eval_files(
         database_uri=db_uri,
-        eval_paths=["nonexistent/*.eval"],
+        path_patterns=["nonexistent/*.eval"],
         workers=1,
         progress_listener=mock_progress_listener,
     )
@@ -151,7 +151,7 @@ def test_ingest_null_progress_listener(
     # Ingest with null progress listener
     ingest_eval_files(
         database_uri=db_uri,
-        eval_paths=[str(sample_eval_log_path)],
+        path_patterns=[str(sample_eval_log_path)],
         workers=1,
         progress_listener=NullProgressListener(),
     )

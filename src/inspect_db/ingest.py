@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+from glob import glob
 from pathlib import Path
 from typing import ContextManager, Literal, Optional, Dict, Any, Protocol
 import queue
@@ -214,7 +215,7 @@ def load_log_worker(
 
 def ingest_eval_files(
     database_uri: str,
-    eval_paths: list[str] | list[Path],
+    path_patterns: list[str],
     workers: int = 4,
     progress_listener: Optional[IngestionProgressListener] = None,
 ) -> None:
@@ -222,14 +223,14 @@ def ingest_eval_files(
 
     Args:
         database_uri: SQLAlchemy database URI (e.g. 'sqlite:///eval.db')
-        eval_paths: List of glob patterns matching .eval files
+        path_patterns: List of glob patterns matching .eval files
         workers: Number of worker threads for log loading
         progress_listener: Optional progress listener for custom progress display
     """
     # Initialize database
     db = EvalDB(database_uri)
 
-    eval_paths = [Path(path) for path in eval_paths]
+    eval_paths = [Path(f) for pattern in path_patterns for f in glob(pattern)]
 
     if not eval_paths:
         print("No .eval files found matching the given patterns")
@@ -239,8 +240,8 @@ def ingest_eval_files(
     log_queue = queue.Queue[Path]()
 
     # Fill log queue
-    for eval_file in eval_paths:
-        log_queue.put(eval_file)
+    for eval_path in eval_paths:
+        log_queue.put(eval_path)
 
     # Start workers
     progress_listener = progress_listener or NullProgressListener()
