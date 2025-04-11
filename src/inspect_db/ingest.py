@@ -193,11 +193,11 @@ def fast_ingest_log(
                         "success",
                         "Inserted",
                     )
-            with db.session() as session:
-                session.add_all(db_msgs)
-                session.add_all(db_samples)
-                session.commit()
-        progress.on_log_completed(log_path, "success", "Ingested")
+        with db.session() as session:
+            session.add_all(db_msgs)
+            session.add_all(db_samples)
+            session.commit()
+        progress.on_log_completed(log_path, "success", "Ingested {}")
     except Exception as e:
         progress.on_log_completed(log_path, "error", str(e))
 
