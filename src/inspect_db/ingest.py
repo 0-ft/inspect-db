@@ -250,6 +250,9 @@ def ingest_logs(
                     session.add_all(job.samples)
                     session.add_all(job.messages)
                     session.commit()
+                    console.log(
+                        f"Inserted {job.log_path}", highlight=False, style="dim"
+                    )
                     progress.event_queue.put(
                         IngestionProgress.LogCompletedEvent(
                             log_path=job.log_path,
