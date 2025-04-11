@@ -13,7 +13,16 @@ from inspect_ai.tool import ToolCall, ToolCallError
 from inspect_ai.util import SandboxEnvironmentSpec
 from pydantic import TypeAdapter
 from sqlalchemy import BLOB
-from sqlmodel import JSON, Column, Relationship, SQLModel, Field, String, TypeDecorator
+from sqlmodel import (
+    JSON,
+    Column,
+    PickleType,
+    Relationship,
+    SQLModel,
+    Field,
+    String,
+    TypeDecorator,
+)
 from typing import Any, List, Literal
 from datetime import datetime
 import uuid
@@ -170,7 +179,9 @@ class DBEvalSample(SQLModel, table=True):
     choices: list[str] | None = Field(default=None, sa_column=Column(JSON))
     target: str | list[str] = Field(sa_column=Column(JSON))
 
-    sandbox: SandboxEnvironmentSpec | None = Field(default=None, sa_column=Column(JSON))
+    sandbox: SandboxEnvironmentSpec | None = Field(
+        default=None, sa_column=Column(PickleType)
+    )
     files: list[str] | None = Field(default=None, sa_column=Column(JSON))
     setup: str | None = Field(default=None, sa_column=Column(JSON))
     output: ModelOutput = Field(sa_column=Column(PydanticJson(ModelOutput)))
