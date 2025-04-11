@@ -34,8 +34,11 @@ def test_convert_sample(raw_db: EvalDB, sample_eval_log: EvalLog):
     assert sample_eval_log.samples is not None
     assert len(sample_eval_log.samples) > 0
 
-    log_uuid = raw_db.insert_log_and_samples(sample_eval_log)
+    with raw_db.session() as session:
+        log_uuid = raw_db.ingest_log(sample_eval_log, session=session)
+        session.commit()  # Ensure all data is committed
 
+    # Get samples in a new session
     for orig_sample, as_db_sample in zip(
         sample_eval_log.samples, raw_db.get_db_samples(log_uuid=log_uuid)
     ):

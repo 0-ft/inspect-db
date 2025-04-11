@@ -1,6 +1,6 @@
 from collections.abc import Iterator
 from uuid import UUID
-from inspect_ai.log import EvalLog
+from inspect_ai.log import EvalLog, EvalSample
 from sqlalchemy import Engine
 from sqlmodel import SQLModel, String, cast, col, create_engine, Session, func, select
 from typing import Any, Literal
@@ -68,21 +68,23 @@ class EvalDB:
         # Create database models
         with session or self.session() as session:
             db_log = DBEvalLog.from_inspect(log)
+            log_uuid = db_log.db_uuid
             samples = []
             messages = []
             for sample in log.samples or []:
-                db_sample = DBEvalSample.from_inspect(sample, db_log.db_uuid)
+                db_sample = DBEvalSample.from_inspect(sample, log_uuid)
                 samples.append(db_sample)
                 for index, msg in enumerate(sample.messages or []):
                     db_msg = DBChatMessage.from_inspect(
-                        msg, db_sample.db_uuid, db_log.db_uuid, index
+                        msg, db_sample.db_uuid, log_uuid, index
                     )
                     messages.append(db_msg)
+            session.add(db_log)
             session.add_all(samples)
             session.add_all(messages)
             session.commit()
 
-        return db_log.db_uuid
+        return log_uuid
 
     def get_db_logs(
         self, log_uuid: UUID | None = None, session: Session | None = None
@@ -119,6 +121,28 @@ class EvalDB:
             query = query.where(DBEvalSample.db_uuid == sample_uuid)
         with self.session() as session:
             yield from session.exec(query)
+
+    def get_inspect_samples(
+        self, log_uuid: UUID | None = None, sample_uuid: UUID | None = None
+    ) -> Iterator[EvalSample]:
+        """Fetch matching samples and convert them to inspect EvalSample objects,
+        including their messages.
+
+        Args:
+            log_uuid: log UUID (optional)
+            sample_uuid: sample UUID (optional)
+
+        Returns:
+            List of EvalSample objects
+        """
+        query = select(DBEvalSample)
+        if log_uuid:
+            query = query.where(DBEvalSample.db_log_uuid == log_uuid)
+        if sample_uuid:
+            query = query.where(DBEvalSample.db_uuid == sample_uuid)
+        with self.session() as session:
+            for db_sample in session.exec(query):
+                yield db_sample.to_inspect()
 
     def get_db_messages(
         self,

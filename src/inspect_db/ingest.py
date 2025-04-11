@@ -191,6 +191,18 @@ def ingest_logs(
     path_patterns: list[str],
     workers: int,
 ) -> None:
+    """Optimized ingestion of logs from a directory.
+    Parallelizes reading logs & preparing them for insertion
+    over multiple worker processes (this is usually the bottleneck).
+
+    Loaded logs are queued for insertion in the main process, using
+    a single database connection for writing (required for DuckDB).
+
+    Args:
+        database_uri: URI of the database to use
+        path_patterns: List of glob patterns to match log files
+        workers: Number of worker threads to use
+    """
     db = EvalDB(database_uri)
     log_paths = [
         Path(path)
