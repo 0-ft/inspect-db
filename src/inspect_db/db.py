@@ -1,72 +1,15 @@
 from collections.abc import Iterator
-from pathlib import Path
-import re
 from uuid import UUID
-import zipfile
-from inspect_ai.log import EvalLog, EvalSample, read_eval_log, read_eval_log_sample
+from inspect_ai.log import EvalLog
 from sqlalchemy import Engine
 from sqlmodel import SQLModel, String, cast, col, create_engine, Session, func, select
-from typing import Any, ContextManager, Literal
-from contextlib import contextmanager, nullcontext
+from typing import Any, Literal
+from contextlib import contextmanager
 
 from .models import DBEvalLog, DBEvalSample, DBChatMessage
 import logging
 
 logger = logging.getLogger(__name__)
-
-
-class IngestionProgressListener:
-    """Protocol for reporting ingestion progress."""
-
-    def progress(self) -> ContextManager[Any]:
-        """Context manager for progress reporting."""
-        return nullcontext()
-
-    def on_ingestion_started(self, workers: int) -> None:
-        """Called when ingestion starts."""
-        pass
-
-    def on_log_started(self, file_path: Path) -> None:
-        """Called when a file starts being processed."""
-        pass
-
-    def on_log_samples_counted(self, file_path: Path, samples_count: int) -> None:
-        """Called when the header of a file has been read."""
-        pass
-
-    def on_log_sample_completed(
-        self,
-        file_path: Path,
-        sample_id: str,
-        epoch: int,
-        status: Literal["success", "error"],
-        message: str,
-    ) -> None:
-        """Called when a sample of a file has been read."""
-        pass
-
-    def on_log_completed(
-        self,
-        file_path: Path,
-        status: Literal["success", "skipped", "error"],
-        message: str,
-    ) -> None:
-        """Called when a file has been inserted."""
-        pass
-
-    def on_ingestion_complete(self) -> None:
-        """Called when all files have been processed."""
-        pass
-
-
-def _get_log_sample_ids(log_path: Path) -> list[tuple[str, int]]:
-    """Get the sample ids and epochs from a log file."""
-    # format is samples/<id>_epoch_<epoch>.json
-    with zipfile.ZipFile(log_path, "r") as zip_file:
-        pattern = re.compile(r"samples/(.*)_epoch_(\d+).json")
-        files = list(zip_file.namelist())
-        matches = [pattern.match(file) for file in files]
-        return [(match.group(1), int(match.group(2))) for match in matches if match]
 
 
 class EvalDB:
@@ -91,99 +34,29 @@ class EvalDB:
             SQLModel.metadata.create_all(self.engine)
             yield session
 
-    def insert_log_header(self, log: EvalLog, session: Session | None = None) -> UUID:
-        """Insert a log header into the database.
+    def insert(
+        self,
+        item: DBEvalLog | DBEvalSample | DBChatMessage,
+        session: Session | None = None,
+        commit: bool = False,
+    ) -> UUID:
+        """Insert an item into the database.
 
         Args:
-            log: EvalLog object
+            item: DBEvalLog, DBEvalSample, or DBChatMessage object
 
         Returns:
-            The UUID of the inserted log
+            The UUID of the inserted item
         """
-        # Create database models
-        db_log = DBEvalLog.from_inspect(log)
-
-        # Insert log header
         with session or self.session() as session:
-            session.add(db_log)
-            session.commit()
-            session.refresh(db_log)  # Ensure we have the UUID
-            log_uuid = db_log.db_uuid
+            session.add(item)
+            if commit:
+                session.commit()
+            item_uuid = item.db_uuid
 
-        return log_uuid
+        return item_uuid
 
-    def insert_sample(
-        self, sample: EvalSample, log_uuid: UUID, session: Session | None = None
-    ) -> UUID:
-        """Insert a log sample into the database.
-
-        Args:
-            sample: EvalSample object
-
-        Returns:
-            The UUID of the inserted log sample
-        """
-        db_sample = DBEvalSample.from_inspect(sample, log_uuid)
-        with session or self.session() as session:
-            session.add(db_sample)
-            session.commit()
-            session.refresh(db_sample)  # Ensure we have the UUID
-            sample_uuid = db_sample.db_uuid
-
-        return sample_uuid
-
-    def insert_sample_and_messages(
-        self, sample: EvalSample, log_uuid: UUID, session: Session | None = None
-    ) -> UUID:
-        """Insert a sample and its associated messages into the database.
-
-        Args:
-            sample: EvalSample object
-            log_uuid: UUID of the log
-        """
-        sample_uuid = self.insert_sample(sample, log_uuid, session=session)
-        with session or self.session() as session:
-            for index, msg in enumerate(sample.messages):
-                db_msg = DBChatMessage.from_inspect(msg, sample_uuid, log_uuid, index)
-                session.add(db_msg)
-            session.commit()
-        return sample_uuid
-
-    def ingest_log(self, log_path: Path, progress: IngestionProgressListener) -> UUID:
-        """Ingest a log into the database.
-
-        Args:
-            log: EvalLog object
-            progress: IngestionProgressListener object
-        """
-        progress.on_log_started(log_path)
-        sample_ids = _get_log_sample_ids(log_path)
-        progress.on_log_samples_counted(log_path, len(sample_ids))
-
-        log_header = read_eval_log(str(log_path), header_only=True)
-        with self.session() as session:
-            db_log = DBEvalLog.from_inspect(log_header)
-            session.add(db_log)
-            for sample_id, epoch in sample_ids:
-                sample = read_eval_log_sample(str(log_path), sample_id, epoch)
-                db_sample = DBEvalSample.from_inspect(sample, db_log.db_uuid)
-                session.add(db_sample)
-                for message_index, msg in enumerate(sample.messages):
-                    db_msg = DBChatMessage.from_inspect(
-                        msg, db_sample.db_uuid, db_log.db_uuid, message_index
-                    )
-                    session.add(db_msg)
-                progress.on_log_sample_completed(
-                    log_path, sample_id, epoch, "success", "Ingested"
-                )
-            session.commit()
-            session.refresh(db_log)
-        progress.on_log_completed(log_path, "success", "Ingested")
-        return db_log.db_uuid
-
-    def insert_log_and_samples(
-        self, log: EvalLog, session: Session | None = None
-    ) -> UUID:
+    def ingest_log(self, log: EvalLog, session: Session | None = None) -> UUID:
         """Insert a log and its associated samples and messages into the database.
 
         Args:
@@ -193,17 +66,23 @@ class EvalDB:
             The UUID of the inserted log
         """
         # Create database models
-        log_uuid = self.insert_log_header(log, session=session)
-
-        # Insert samples and messages
         with session or self.session() as session:
-            # Insert samples and messages
+            db_log = DBEvalLog.from_inspect(log)
+            samples = []
+            messages = []
             for sample in log.samples or []:
-                self.insert_sample_and_messages(sample, log_uuid, session=session)
-
+                db_sample = DBEvalSample.from_inspect(sample, db_log.db_uuid)
+                samples.append(db_sample)
+                for index, msg in enumerate(sample.messages or []):
+                    db_msg = DBChatMessage.from_inspect(
+                        msg, db_sample.db_uuid, db_log.db_uuid, index
+                    )
+                    messages.append(db_msg)
+            session.add_all(samples)
+            session.add_all(messages)
             session.commit()
 
-        return log_uuid
+        return db_log.db_uuid
 
     def get_db_logs(
         self, log_uuid: UUID | None = None, session: Session | None = None

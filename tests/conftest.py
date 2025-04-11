@@ -1,12 +1,9 @@
-from contextlib import nullcontext
 import pytest
 from pathlib import Path
 import tempfile
 from inspect_ai.log import EvalLog, EvalSample, read_eval_log
-from pytest_mock import MockerFixture
 
 from inspect_db.db import EvalDB
-from inspect_db.ingest import IngestionProgressListener
 
 
 @pytest.fixture
@@ -87,12 +84,3 @@ def db_uri(request, db_path: Path) -> str:
     For file-based databases, uses the temp_dir.
     """
     return f"{request.param}:///{db_path}"
-
-
-@pytest.fixture
-def mock_progress_listener(mocker: MockerFixture):
-    """Create a mock progress listener for testing."""
-    mock = mocker.Mock(spec=IngestionProgressListener)
-
-    mock.progress.return_value = nullcontext()
-    return mock

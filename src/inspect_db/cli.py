@@ -6,7 +6,7 @@ from typing import Literal
 from inspect_ai.model import ChatMessageAssistant, ChatMessageTool
 
 from inspect_db.db import EvalDB
-from .ingest import RichProgressListener, ingest_logs
+from .ingest import ingest_logs
 from rich.console import Console, Group
 from rich.table import Table
 from rich.panel import Panel
@@ -35,8 +35,7 @@ def ingest(
     DATABASE_URI: SQLAlchemy database URI (e.g. 'sqlite:///eval.db')
     PATH_PATTERNS: One or more glob patterns matching .eval files
     """
-    progress_listener = None if quiet else RichProgressListener(console=console)
-    ingest_logs(database_uri, path_patterns, workers, progress_listener)
+    ingest_logs(database_uri, path_patterns, workers)
 
 
 @cli.command()
