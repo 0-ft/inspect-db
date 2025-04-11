@@ -16,7 +16,6 @@ from .db import EvalDB
 from rich.progress import (
     Progress,
     TaskID,
-    SpinnerColumn,
     TimeRemainingColumn,
     TextColumn,
     BarColumn,
@@ -75,13 +74,11 @@ class IngestionProgress(Progress):
 
     def __init__(self, console: Console):
         super().__init__(
-            SpinnerColumn(),
             TextColumn("{task.description}{task.fields[note]}"),
-            BarColumn(bar_width=None, finished_style="dim"),
+            BarColumn(finished_style="dim"),
             MofNCompleteColumn(),
             TimeRemainingColumn(),
             console=console,
-            expand=True,
         )
 
     def stats(self) -> dict[str, int]:
