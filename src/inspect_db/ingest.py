@@ -1,304 +1,194 @@
-from dataclasses import dataclass
+from __future__ import annotations
+from collections.abc import Sequence
 from glob import glob
 from pathlib import Path
-import queue
 from multiprocessing import Queue, Process
-from typing import Literal
-from inspect_ai.log import read_eval_log
-from pydantic import BaseModel
-from sqlmodel import select, col
-import threading
+import queue
 import time
+from typing import Literal
 
+from sqlmodel import select, col
+from rich.progress import Progress
+from rich.console import Console
+from rich.table import Table
+
+from inspect_ai.log import read_eval_log
 from inspect_db.models import DBChatMessage, DBEvalLog, DBEvalSample
 from inspect_db.util import iter_inspect_samples_fast, read_eval_log_header
 from .db import EvalDB
-from rich.progress import (
-    Progress,
-    TaskID,
-    TimeRemainingColumn,
-    TextColumn,
-    BarColumn,
-    MofNCompleteColumn,
+
+type StatusUpdate = (
+    tuple[Literal["samples_counted"], Path, int]
+    | tuple[Literal["sample_read"], Path, int]
+    | tuple[Literal["error"], Path, Exception]
+    | tuple[Literal["pending", "started", "inserted", "skipped"], Path]
+    | tuple[Literal["finished"]]
 )
-from rich.table import Table
-from rich.console import Console
+
+type LogResult = tuple[Path, Sequence[DBEvalLog | DBEvalSample | DBChatMessage]]
 
 
-@dataclass
-class InsertJob:
-    log_path: Path
-    log: DBEvalLog
-    samples: list[DBEvalSample]
-    messages: list[DBChatMessage]
-
-
-class IngestionProgress(Progress):
-    class LogStartedEvent(BaseModel):
-        type: Literal["log_started"] = "log_started"
-        log_path: Path
-
-    class LogSamplesCountedEvent(BaseModel):
-        type: Literal["log_samples_counted"] = "log_samples_counted"
-        log_path: Path
-        samples_count: int
-
-    class LogSampleReadEvent(BaseModel):
-        type: Literal["log_sample_read"] = "log_sample_read"
-        log_path: Path
-        messages_count: int
-
-    class LogCompletedEvent(BaseModel):
-        type: Literal["log_completed"] = "log_completed"
-        log_path: Path
-        status: Literal["skipped", "inserted", "error"]
-        samples_count: int
-        messages_count: int
-
-    IngestionEvent = (
-        LogStartedEvent
-        | LogSamplesCountedEvent
-        | LogSampleReadEvent
-        | LogCompletedEvent
-    )
-
-    logs_skipped: int = 0
-    logs_inserted: int = 0
-    logs_errors: int = 0
-    samples_inserted: int = 0
-    messages_inserted: int = 0
-    log_tasks: dict[Path, TaskID] = {}
-    event_queue: Queue = Queue()
-    _processing_thread: threading.Thread | None = None
-    _stop_processing: threading.Event = threading.Event()
-
-    def __init__(self, console: Console):
-        super().__init__(
-            TextColumn("{task.description}{task.fields[note]}"),
-            BarColumn(finished_style="dim"),
-            MofNCompleteColumn(),
-            TimeRemainingColumn(),
-            console=console,
-        )
-
-    def stats(self) -> dict[str, int]:
-        return {
-            "logs_skipped": self.logs_skipped,
-            "logs_inserted": self.logs_inserted,
-            "logs_errors": self.logs_errors,
-            "samples_inserted": self.samples_inserted,
-            "messages_inserted": self.messages_inserted,
-        }
-
-    def process_events(self):
-        while not self.event_queue.empty():
-            event: IngestionProgress.IngestionEvent = self.event_queue.get_nowait()
-            if event.type == "log_started":
-                self.log_tasks[event.log_path] = self.add_task(
-                    f"{event.log_path.name[:10]}[dim]...[/dim]{event.log_path.name[-13:]}",
-                    total=None,
-                    note="",
-                )
-            elif event.type == "log_samples_counted":
-                self.update(self.log_tasks[event.log_path], total=event.samples_count)
-            elif event.type == "log_sample_read":
-                self.update(self.log_tasks[event.log_path], advance=1)
-            elif event.type == "log_completed":
-                if event.status == "skipped":
-                    self.update(
-                        self.log_tasks[event.log_path],
-                        total=0,
-                        completed=0,
-                        note=" (skipped)",
-                    )
-                    self.logs_skipped += 1
-                elif event.status == "inserted":
-                    self.logs_inserted += 1
-                    self.samples_inserted += event.samples_count
-                    self.messages_inserted += event.messages_count
-                elif event.status == "error":
-                    self.logs_errors += 1
-
-    def _process_queue_loop(self):
-        while not self._stop_processing.is_set():
-            self.process_events()
-            time.sleep(0.01)  # Small sleep to prevent busy waiting
-
-    def start(self):
-        """Start the background thread to process events"""
-        super().start()
-        self._stop_processing.clear()
-        self._processing_thread = threading.Thread(target=self._process_queue_loop)
-        self._processing_thread.daemon = True
-        self._processing_thread.start()
-
-    def stop(self):
-        """Stop the background thread and process any remaining events"""
-        super().stop()
-        if self._processing_thread is not None:
-            self._stop_processing.set()
-            self._processing_thread.join()
-            # Process any remaining events
-            self.process_events()
-
-    def stats_table(self) -> Table:
-        table = Table(title="Ingestion Stats")
-        table.add_column("Stat", justify="right")
-        table.add_column("Value", justify="left")
-        for key, value in self.stats().items():
-            table.add_row(key, str(value))
-        return table
-
-
-def read_logs_worker(
-    log_queue: Queue,
-    insert_queue: Queue,
-    progress_queue: Queue,
-) -> None:
+def read_log_worker(
+    job_queue: Queue[Path | None],
+    result_queue: Queue[LogResult],
+    update_queue: Queue[StatusUpdate],
+):
+    """Process logs from a job queue and return the DB objects to insert."""
     while True:
-        try:
-            log_path = log_queue.get_nowait()
-        except queue.Empty:
+        # Get next job from queue
+        log_path = job_queue.get(block=True)
+        if log_path is None:  # Sentinel value to stop worker
             break
 
-        log_header, sample_ids = read_eval_log_header(log_path)
-        progress_queue.put(
-            IngestionProgress.LogSamplesCountedEvent(
-                log_path=log_path, samples_count=len(sample_ids)
-            )
-        )
-        db_log = DBEvalLog.from_inspect(log_header)
-        db_samples = []
-        db_messages = []
-        for sample in iter_inspect_samples_fast(log_path, sample_ids):
-            db_sample = DBEvalSample.from_inspect(sample, db_log.db_uuid)
-            db_samples.append(db_sample)
-            for message in sample.messages:
-                db_message = DBChatMessage.from_inspect(
-                    message, db_sample.db_uuid, db_log.db_uuid, len(db_samples)
+        try:
+            update_queue.put(("started", log_path))
+            # Count samples
+            log_header, sample_ids = read_eval_log_header(log_path)
+            update_queue.put(("samples_counted", log_path, len(sample_ids)))
+
+            # Create DB objects
+            to_insert = []
+            db_log = DBEvalLog.from_inspect(log_header)
+            to_insert.append(db_log)
+
+            # Process each sample
+            for sample in iter_inspect_samples_fast(log_path, sample_ids):
+                db_sample = DBEvalSample.from_inspect(sample, db_log.db_uuid)
+                to_insert.append(db_sample)
+
+                for i, message in enumerate(sample.messages):
+                    db_message = DBChatMessage.from_inspect(
+                        message, db_sample.db_uuid, db_log.db_uuid, i
+                    )
+                    to_insert.append(db_message)
+
+                update_queue.put(("sample_read", log_path, len(sample.messages)))
+
+            result_queue.put((log_path, to_insert))
+
+        except Exception as e:
+            update_queue.put(("error", log_path, e))
+            raise e
+
+
+def progress_view_worker(update_queue: Queue[StatusUpdate], console: Console):
+    """Display progress updates in a live view."""
+    path_tasks = {}
+    progress = Progress(console=console)
+    total_messages = 0
+    with progress:
+        while True:
+            update = update_queue.get(block=True)
+            if update[0] == "finished":
+                break
+            elif update[0] == "pending":
+                path_tasks[update[1]] = progress.add_task(
+                    update[1].name, total=None, status="pending"
                 )
-                db_messages.append(db_message)
-            progress_queue.put(
-                IngestionProgress.LogSampleReadEvent(
-                    log_path=log_path, messages_count=len(db_messages)
-                )
-            )
-        insert_queue.put(InsertJob(log_path, db_log, db_samples, db_messages))
+            elif update[0] == "sample_read":
+                progress.update(path_tasks[update[1]], advance=1)
+                total_messages += update[2]
+            elif update[0] == "samples_counted":
+                progress.update(path_tasks[update[1]], total=update[2])
+            elif update[0] in ("started", "inserted", "skipped", "error"):
+                progress.update(path_tasks[update[1]], status=update[0])
+
+    table = Table(title="Ingestion Stats")
+    table.add_column("Stat", justify="right")
+    table.add_column("Value", justify="left")
+    stats = {
+        "total_logs": 0,
+        "logs_ingested": 0,
+        "logs_skipped": 0,
+        "logs_errors": 0,
+        "samples_ingested": 0,
+        "messages_ingested": total_messages,
+    }
+    for task in progress.tasks:
+        if task.fields["status"] == "inserted":
+            stats["logs_ingested"] += 1
+            stats["samples_ingested"] += int(task.total or 0)
+        elif task.fields["status"] == "skipped":
+            stats["logs_skipped"] += 1
+        elif task.fields["status"] == "error":
+            stats["logs_errors"] += 1
+
+    for key, value in stats.items():
+        table.add_row(key, str(value))
+    console.print(table)
 
 
-def ingest_logs(
-    database_uri: str,
-    path_patterns: list[str],
-    workers: int,
-) -> None:
-    """Optimized ingestion of logs from a directory.
-    Parallelizes reading logs & preparing them for insertion
-    over multiple worker processes (this is usually the bottleneck).
-
-    Loaded logs are queued for insertion in the main process, using
-    a single database connection for writing (required for DuckDB).
-
-    Args:
-        database_uri: URI of the database to use
-        path_patterns: List of glob patterns to match log files
-        workers: Number of worker threads to use
-    """
+def ingest_logs(database_uri, path_patterns, workers=4):
+    """Ingest logs from files matching path_patterns into the database."""
+    console = Console()
     db = EvalDB(database_uri)
+
+    # Find all log files
     log_paths = [
         Path(path)
         for pattern in path_patterns
         for path in glob(pattern, recursive=True)
     ]
 
-    # Use multiprocessing.Queue for inter-process communication
-    log_queue = Queue()
-    insert_queue = Queue()
-
-    console = Console()
-    progress = IngestionProgress(console=console)
-
-    progress.start()
-
-    # First pass: check existing logs and queue tasks
+    # Setup queues
+    job_queue: Queue[Path | None] = Queue()
+    result_queue: Queue[LogResult] = Queue()
+    progress_queue: Queue[StatusUpdate] = Queue()
+    # Check which logs are already in the database
     with db.session() as session:
         for log_path in log_paths:
-            progress.event_queue.put(
-                IngestionProgress.LogStartedEvent(log_path=log_path)
-            )
+            progress_queue.put(("pending", log_path))
             log_header = read_eval_log(str(log_path), header_only=True)
             query = select(DBEvalLog).where(
                 col(DBEvalLog.location) == log_header.location
             )
+
             if session.exec(query).first():
-                progress.event_queue.put(
-                    IngestionProgress.LogCompletedEvent(
-                        log_path=log_path,
-                        status="skipped",
-                        samples_count=0,
-                        messages_count=0,
-                    )
-                )
+                progress_queue.put(("skipped", log_path))
             else:
-                log_queue.put(log_path)
+                job_queue.put(log_path)
 
-    # Start worker processes
-    worker_processes: list[Process] = []
+    if job_queue.empty():
+        console.print("No new logs to process.")
+        return
+
+    # Add sentinel values to stop workers
     for _ in range(workers):
-        worker = Process(
-            target=read_logs_worker,
-            args=(log_queue, insert_queue, progress.event_queue),
+        job_queue.put(None)
+
+    # Start workers
+    load_workers = []
+    for _ in range(workers):
+        process = Process(
+            target=read_log_worker, args=(job_queue, result_queue, progress_queue)
         )
-        worker.start()
-        worker_processes.append(worker)
+        process.start()
+        load_workers.append(process)
 
-    # Process insert queue while workers are running
-    while True:
-        # Handle insert jobs (non-blocking)
-        try:
-            job: InsertJob = insert_queue.get_nowait()
+    progress_process = Process(
+        target=progress_view_worker, args=(progress_queue, console)
+    )
+    progress_process.start()
+
+    with db.session() as session:
+        # Process events and results while workers are running
+        while any(p.is_alive() for p in load_workers) or not result_queue.empty():
+            # Handle results
             try:
-                with db.session() as session:
-                    session.add(job.log)
-                    session.add_all(job.samples)
-                    session.add_all(job.messages)
+                log_path, result = result_queue.get_nowait()
+                try:
+                    session.add_all(result)
                     session.commit()
-                    console.log(
-                        f"Inserted {job.log_path}", highlight=False, style="dim"
-                    )
-                    progress.event_queue.put(
-                        IngestionProgress.LogCompletedEvent(
-                            log_path=job.log_path,
-                            status="inserted",
-                            samples_count=len(job.samples),
-                            messages_count=len(job.messages),
-                        )
-                    )
-            except Exception as e:
-                console.log(f"Error inserting {job.log_path}: {e}")
-                progress.event_queue.put(
-                    IngestionProgress.LogCompletedEvent(
-                        log_path=job.log_path,
-                        status="error",
-                        samples_count=len(job.samples),
-                        messages_count=len(job.messages),
-                    )
-                )
-        except queue.Empty:
-            pass
+                    progress_queue.put(("inserted", log_path))
+                except Exception as e:
+                    progress_queue.put(("error", log_path, e))
+            except queue.Empty:
+                time.sleep(0.1)
 
-        if (
-            not any(worker.is_alive() for worker in worker_processes)
-            and log_queue.empty()
-            and insert_queue.empty()
-        ):
-            break
+        # Clean up
+        for process in load_workers:
+            process.join()
 
-    # Stop the progress processing thread and clean up
-    progress.stop()
-
-    # Clean up worker processes
-    for worker in worker_processes:
-        worker.join()
-
-    # Print final stats
-    console.print(progress.stats_table())
+        progress_queue.put(("finished",))
+        progress_process.join()
+        session.commit()

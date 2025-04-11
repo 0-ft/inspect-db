@@ -1,45 +1,9 @@
 from pathlib import Path
 from inspect_db.ingest import (
-    IngestionProgress,
     ingest_logs,
 )
 from inspect_db.db import EvalDB
 from inspect_ai.log import read_eval_log
-from rich.console import Console
-import time
-
-
-def test_ingestion_progress_stats():
-    """Test that IngestionProgress correctly tracks statistics"""
-    console = Console()
-    progress = IngestionProgress(console=console)
-    progress.start()
-
-    # Simulate some events
-    log_path = Path("test.eval")
-    progress.event_queue.put(IngestionProgress.LogStartedEvent(log_path=log_path))
-    progress.event_queue.put(
-        IngestionProgress.LogSamplesCountedEvent(log_path=log_path, samples_count=5)
-    )
-    progress.event_queue.put(
-        IngestionProgress.LogSampleReadEvent(log_path=log_path, messages_count=10)
-    )
-    progress.event_queue.put(
-        IngestionProgress.LogCompletedEvent(
-            log_path=log_path,
-            status="inserted",
-            samples_count=5,
-            messages_count=10,
-        )
-    )
-
-    time.sleep(0.1)  # Give time for processing
-    stats = progress.stats()
-    assert stats["logs_inserted"] == 1
-    assert stats["samples_inserted"] == 5
-    assert stats["messages_inserted"] == 10
-
-    progress.stop()
 
 
 def test_ingest_logs_skip_existing(
