@@ -3,15 +3,20 @@ from collections.abc import Sequence
 from glob import glob
 from pathlib import Path
 from multiprocessing import Queue, Process
-import queue
-import time
 from typing import Literal
 
 from sqlmodel import select, col
-from rich.progress import Progress
+from rich.progress import (
+    Progress,
+    TextColumn,
+    BarColumn,
+    MofNCompleteColumn,
+    TimeRemainingColumn,
+)
 from rich.console import Console
 from rich.table import Table
-
+from rich.live import Live
+from rich import box
 from inspect_ai.log import read_eval_log
 from inspect_db.models import DBChatMessage, DBEvalLog, DBEvalSample
 from inspect_db.util import iter_inspect_samples_fast, read_eval_log_header
@@ -70,51 +75,67 @@ def read_log_worker(
             update_queue.put(("error", log_path, e))
 
 
-def progress_view_worker(update_queue: Queue[StatusUpdate], console: Console):
+def progress_view_worker(
+    console: Console,
+    update_queue: Queue[StatusUpdate],
+    result_queue: Queue[LogResult],
+):
     """Display progress updates in a live view."""
-    path_tasks = {}
-    progress = Progress(console=console)
-    total_messages = 0
-    with progress:
-        while True:
-            update = update_queue.get(block=True)
-            if update[0] == "finished":
-                break
-            elif update[0] == "pending":
-                path_tasks[update[1]] = progress.add_task(
-                    update[1].name, total=None, status="pending"
-                )
-            elif update[0] == "sample_read":
-                progress.update(path_tasks[update[1]], advance=1)
-                total_messages += update[2]
-            elif update[0] == "samples_counted":
-                progress.update(path_tasks[update[1]], total=update[2])
-            elif update[0] in ("started", "inserted", "skipped", "error"):
-                progress.update(path_tasks[update[1]], status=update[0])
 
-    table = Table(title="Ingestion Stats")
-    table.add_column("Stat", justify="right")
-    table.add_column("Value", justify="left")
-    stats = {
-        "total_logs": 0,
-        "logs_ingested": 0,
-        "logs_skipped": 0,
-        "logs_errors": 0,
-        "samples_ingested": 0,
-        "messages_ingested": total_messages,
-    }
-    for task in progress.tasks:
-        if task.fields["status"] == "inserted":
-            stats["logs_ingested"] += 1
-            stats["samples_ingested"] += int(task.total or 0)
-        elif task.fields["status"] == "skipped":
-            stats["logs_skipped"] += 1
-        elif task.fields["status"] == "error":
-            stats["logs_errors"] += 1
+    class IngestProgress(Progress):
+        def __init__(self):
+            self.total_messages = 0
+            self.path_tasks = {}
+            self.status_counts = {}
+            super().__init__(
+                TextColumn("{task.description}"),
+                TextColumn("({task.fields[status]})", style="dim italic"),
+                BarColumn(finished_style="dim"),
+                MofNCompleteColumn(),
+                TimeRemainingColumn(),
+                console=console,
+            )
 
-    for key, value in stats.items():
-        table.add_row(key, str(value))
-    console.print(table)
+        def summary_table(self):
+            table = Table(box=box.SIMPLE)
+            table.add_column("messages parsed")
+            table.add_column("logs inserted")
+            table.add_row(
+                str(self.total_messages), str(self.status_counts.get("inserted", 0))
+            )
+            return table
+            # return Panel(table, title="Ingestion Stats", expand=False)
+
+        def get_renderables(self):
+            yield self.summary_table()
+            yield from super().get_renderables()
+
+        def read_from_queue(self, update_queue: Queue[StatusUpdate]):
+            while True:
+                update = update_queue.get(block=True)
+                self.status_counts[update[0]] = self.status_counts.get(update[0], 0) + 1
+                if update[0] == "finished":
+                    break
+                elif update[0] == "pending":
+                    path = update[1]
+                    self.path_tasks[path] = self.add_task(
+                        f"{path.name[:8]}[dim]...[/dim]{path.name[-12:]}",
+                        total=None,
+                        status="pending",
+                    )
+                elif update[0] == "sample_read":
+                    self.update(self.path_tasks[update[1]], advance=1)
+                    self.total_messages += update[2]
+                elif update[0] == "samples_counted":
+                    self.update(self.path_tasks[update[1]], total=update[2])
+                elif update[0] == "error":
+                    self.update(self.path_tasks[update[1]], total=0, status="error")
+                elif update[0] in ("started", "inserted", "skipped"):
+                    self.update(self.path_tasks[update[1]], status=update[0])
+
+    progress = IngestProgress()
+    with Live(progress, refresh_per_second=10):
+        progress.read_from_queue(update_queue)
 
 
 def ingest_logs(database_uri, path_patterns, workers=4):
@@ -137,7 +158,12 @@ def ingest_logs(database_uri, path_patterns, workers=4):
     with db.session() as session:
         for log_path in log_paths:
             progress_queue.put(("pending", log_path))
-            log_header = read_eval_log(str(log_path), header_only=True)
+            try:
+                log_header = read_eval_log(str(log_path), header_only=True)
+            except Exception as e:
+                progress_queue.put(("error", log_path, e))
+                continue
+
             query = select(DBEvalLog).where(
                 col(DBEvalLog.location) == log_header.location
             )
@@ -165,7 +191,8 @@ def ingest_logs(database_uri, path_patterns, workers=4):
         load_workers.append(process)
 
     progress_process = Process(
-        target=progress_view_worker, args=(progress_queue, console)
+        target=progress_view_worker,
+        args=(console, progress_queue, result_queue),
     )
     progress_process.start()
 
@@ -173,16 +200,13 @@ def ingest_logs(database_uri, path_patterns, workers=4):
         # Process events and results while workers are running
         while any(p.is_alive() for p in load_workers) or not result_queue.empty():
             # Handle results
+            log_path, result = result_queue.get(block=True)
             try:
-                log_path, result = result_queue.get_nowait()
-                try:
-                    session.add_all(result)
-                    session.commit()
-                    progress_queue.put(("inserted", log_path))
-                except Exception as e:
-                    progress_queue.put(("error", log_path, e))
-            except queue.Empty:
-                time.sleep(0.1)
+                session.add_all(result)
+                session.commit()
+                progress_queue.put(("inserted", log_path))
+            except Exception as e:
+                progress_queue.put(("error", log_path, e))
 
         # Clean up
         for process in load_workers:
