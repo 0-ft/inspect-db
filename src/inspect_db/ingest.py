@@ -68,7 +68,6 @@ def read_log_worker(
 
         except Exception as e:
             update_queue.put(("error", log_path, e))
-            raise e
 
 
 def progress_view_worker(update_queue: Queue[StatusUpdate], console: Console):
