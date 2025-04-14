@@ -3,6 +3,7 @@ from pathlib import Path
 import re
 import zipfile
 
+
 from inspect_ai.log import EvalSample, read_eval_log, read_eval_log_sample, EvalLog
 
 

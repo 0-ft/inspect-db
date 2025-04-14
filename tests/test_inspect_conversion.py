@@ -35,7 +35,7 @@ def test_convert_sample(raw_db: EvalDB, sample_eval_log: EvalLog):
     assert len(sample_eval_log.samples) > 0
 
     with raw_db.session() as session:
-        log_uuid = raw_db.ingest_log(sample_eval_log, session=session)
+        log_uuid = raw_db.ingest(sample_eval_log, session=session)
         session.commit()  # Ensure all data is committed
 
     # Get samples in a new session

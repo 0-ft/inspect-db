@@ -78,7 +78,7 @@ def read_log_worker(
 def progress_view_worker(
     console: Console,
     update_queue: Queue[StatusUpdate],
-    result_queue: Queue[LogResult],
+    insert_queue: Queue[LogResult],
 ):
     """Display progress updates in a live view."""
 
@@ -99,9 +99,16 @@ def progress_view_worker(
         def summary_table(self):
             table = Table(box=box.SIMPLE)
             table.add_column("messages parsed")
+            table.add_column("logs awaiting insert")
             table.add_column("logs inserted")
+            table.add_column("logs skipped")
+            table.add_column("logs failed")
             table.add_row(
-                str(self.total_messages), str(self.status_counts.get("inserted", 0))
+                str(self.total_messages),
+                str(insert_queue.qsize()),
+                str(self.status_counts.get("inserted", 0)),
+                str(self.status_counts.get("skipped", 0)),
+                str(self.status_counts.get("error", 0)),
             )
             return table
             # return Panel(table, title="Ingestion Stats", expand=False)
@@ -138,7 +145,7 @@ def progress_view_worker(
         progress.read_from_queue(update_queue)
 
 
-def ingest_logs(database_uri, path_patterns, workers=4):
+def ingest_logs(database_uri, path_patterns, workers=4, tags: list[str] | None = None):
     """Ingest logs from files matching path_patterns into the database."""
     console = Console()
     db = EvalDB(database_uri)
@@ -152,16 +159,16 @@ def ingest_logs(database_uri, path_patterns, workers=4):
 
     # Setup queues
     job_queue: Queue[Path | None] = Queue()
-    result_queue: Queue[LogResult] = Queue()
-    progress_queue: Queue[StatusUpdate] = Queue()
+    insert_queue: Queue[LogResult] = Queue()
+    update_queue: Queue[StatusUpdate] = Queue()
     # Check which logs are already in the database
     with db.session() as session:
         for log_path in log_paths:
-            progress_queue.put(("pending", log_path))
+            update_queue.put(("pending", log_path))
             try:
                 log_header = read_eval_log(str(log_path), header_only=True)
             except Exception as e:
-                progress_queue.put(("error", log_path, e))
+                update_queue.put(("error", log_path, e))
                 continue
 
             query = select(DBEvalLog).where(
@@ -169,7 +176,7 @@ def ingest_logs(database_uri, path_patterns, workers=4):
             )
 
             if session.exec(query).first():
-                progress_queue.put(("skipped", log_path))
+                update_queue.put(("skipped", log_path))
             else:
                 job_queue.put(log_path)
 
@@ -185,33 +192,33 @@ def ingest_logs(database_uri, path_patterns, workers=4):
     load_workers = []
     for _ in range(workers):
         process = Process(
-            target=read_log_worker, args=(job_queue, result_queue, progress_queue)
+            target=read_log_worker, args=(job_queue, insert_queue, update_queue)
         )
         process.start()
         load_workers.append(process)
 
     progress_process = Process(
         target=progress_view_worker,
-        args=(console, progress_queue, result_queue),
+        args=(console, update_queue, insert_queue),
     )
     progress_process.start()
 
     with db.session() as session:
         # Process events and results while workers are running
-        while any(p.is_alive() for p in load_workers) or not result_queue.empty():
+        while any(p.is_alive() for p in load_workers) or not insert_queue.empty():
             # Handle results
-            log_path, result = result_queue.get(block=True)
+            log_path, result = insert_queue.get(block=True)
             try:
                 session.add_all(result)
                 session.commit()
-                progress_queue.put(("inserted", log_path))
+                update_queue.put(("inserted", log_path))
             except Exception as e:
-                progress_queue.put(("error", log_path, e))
+                update_queue.put(("error", log_path, e))
 
         # Clean up
         for process in load_workers:
             process.join()
 
-        progress_queue.put(("finished",))
+        update_queue.put(("finished",))
         progress_process.join()
         session.commit()

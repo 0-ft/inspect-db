@@ -1,9 +1,10 @@
 from collections.abc import Iterator
 from uuid import UUID
 from inspect_ai.log import EvalLog, EvalSample
+from inspect_ai.model import ChatMessage
 from sqlalchemy import Engine
 from sqlmodel import SQLModel, String, cast, col, create_engine, Session, func, select
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 from contextlib import contextmanager
 
 from .models import DBEvalLog, DBEvalSample, DBChatMessage
@@ -12,7 +13,29 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-class EvalDB:
+class EvalSource(Protocol):
+    """Protocol for eval sources."""
+
+    def get_logs(
+        self, task: str | None = None, task_id: str | None = None
+    ) -> Iterator[EvalLog]:
+        """Get logs from the eval source."""
+        ...
+
+    def get_samples(self) -> Iterator[EvalSample]:
+        """Get samples from the eval source."""
+        ...
+
+    def get_messages(
+        self,
+        role: Literal["system", "user", "assistant", "tool"] | None = None,
+        pattern: str | None = None,
+    ) -> Iterator[ChatMessage]:
+        """Get messages from the eval source."""
+        ...
+
+
+class EvalDB(EvalSource):
     """Low-level database operations that work directly with database models."""
 
     def __init__(self, db: str | Engine):
@@ -34,29 +57,7 @@ class EvalDB:
             SQLModel.metadata.create_all(self.engine)
             yield session
 
-    def insert(
-        self,
-        item: DBEvalLog | DBEvalSample | DBChatMessage,
-        session: Session | None = None,
-        commit: bool = False,
-    ) -> UUID:
-        """Insert an item into the database.
-
-        Args:
-            item: DBEvalLog, DBEvalSample, or DBChatMessage object
-
-        Returns:
-            The UUID of the inserted item
-        """
-        with session or self.session() as session:
-            session.add(item)
-            if commit:
-                session.commit()
-            item_uuid = item.db_uuid
-
-        return item_uuid
-
-    def ingest_log(self, log: EvalLog, session: Session | None = None) -> UUID:
+    def ingest(self, log: EvalLog, session: Session | None = None) -> UUID:
         """Insert a log and its associated samples and messages into the database.
 
         Args:
@@ -87,7 +88,11 @@ class EvalDB:
         return log_uuid
 
     def get_db_logs(
-        self, log_uuid: UUID | None = None, session: Session | None = None
+        self,
+        log_uuid: UUID | None = None,
+        task: str | None = None,
+        task_id: str | None = None,
+        session: Session | None = None,
     ) -> Iterator[DBEvalLog]:
         """Get all logs in the database.
 
@@ -100,8 +105,21 @@ class EvalDB:
         query = select(DBEvalLog)
         if log_uuid:
             query = query.where(DBEvalLog.db_uuid == log_uuid)
+        if task:
+            query = query.where(DBEvalLog.eval.task == task)
+        if task_id:
+            query = query.where(DBEvalLog.eval.task_id == task_id)
         with session or self.session() as session:
             yield from session.exec(query)
+
+    def get_logs(
+        self,
+        task: str | None = None,
+        task_id: str | None = None,
+        log_uuid: UUID | None = None,
+    ) -> Iterator[EvalLog]:
+        for db_log in self.get_db_logs(task=task, task_id=task_id, log_uuid=log_uuid):
+            yield db_log.to_inspect()
 
     def get_db_samples(
         self, log_uuid: UUID | None = None, sample_uuid: UUID | None = None
@@ -122,27 +140,20 @@ class EvalDB:
         with self.session() as session:
             yield from session.exec(query)
 
-    def get_inspect_samples(
+    def get_samples(
         self, log_uuid: UUID | None = None, sample_uuid: UUID | None = None
     ) -> Iterator[EvalSample]:
-        """Fetch matching samples and convert them to inspect EvalSample objects,
-        including their messages.
+        """Get matching samples in inspect EvalSample format.
 
         Args:
-            log_uuid: log UUID (optional)
-            sample_uuid: sample UUID (optional)
+            log_uuid: UUID of the log (optional)
+            sample_uuid: UUID of the sample (optional)
 
         Returns:
             List of EvalSample objects
         """
-        query = select(DBEvalSample)
-        if log_uuid:
-            query = query.where(DBEvalSample.db_log_uuid == log_uuid)
-        if sample_uuid:
-            query = query.where(DBEvalSample.db_uuid == sample_uuid)
-        with self.session() as session:
-            for db_sample in session.exec(query):
-                yield db_sample.to_inspect()
+        for db_sample in self.get_db_samples(log_uuid, sample_uuid):
+            yield db_sample.to_inspect()
 
     def get_db_messages(
         self,
@@ -177,6 +188,16 @@ class EvalDB:
             )  # TODO: duckdb-engine doesn't seem to support regexp_match
         with self.session() as session:
             yield from session.exec(query)
+
+    def get_messages(
+        self,
+        role: Literal["system", "user", "assistant", "tool"] | None = None,
+        pattern: str | None = None,
+        log_uuid: UUID | None = None,
+        sample_uuid: UUID | None = None,
+    ) -> Iterator[ChatMessage]:
+        for db_msg in self.get_db_messages(log_uuid, sample_uuid, role, pattern):
+            yield db_msg.to_inspect()
 
     def stats(self) -> dict[str, Any]:
         with self.session() as session:

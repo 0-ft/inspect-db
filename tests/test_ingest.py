@@ -14,7 +14,7 @@ def test_ingest_logs_skip_existing(
     # First ingest a log
     with raw_db.session() as session:
         log = read_eval_log(str(sample_eval_log_paths[0]))
-        raw_db.ingest_log(log, session=session)
+        raw_db.ingest(log, session=session)
         session.commit()
 
     # Try to ingest the same log again
@@ -48,7 +48,7 @@ def test_ingest_logs_multiple_workers(db_uri: str, sample_eval_log_paths: list[P
         # Verify samples and messages were inserted
         for log in logs:
             log_uuid = log.db_uuid
-            samples = list(raw_db.get_inspect_samples(log_uuid=log_uuid))
+            samples = list(raw_db.get_samples(log_uuid=log_uuid))
             assert len(samples) > 0
             for sample in samples:
                 assert len(sample.messages) > 0

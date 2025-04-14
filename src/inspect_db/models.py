@@ -277,6 +277,7 @@ class DBEvalLog(SQLModel, table=True):
     # Database fields
     db_uuid: UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     inserted: datetime = Field(default_factory=datetime.now)
+    db_tags: list[str] = Field(default_factory=list, sa_column=Column(JSON))
 
     # Relationships
     samples: List["DBEvalSample"] = Relationship(
@@ -299,7 +300,7 @@ class DBEvalLog(SQLModel, table=True):
     )
 
     @classmethod
-    def from_inspect(cls, log: EvalLog) -> "DBEvalLog":
+    def from_inspect(cls, log: EvalLog, tags: list[str] | None = None) -> "DBEvalLog":
         return cls(
             location=log.location,
             eval=log.eval,
@@ -308,6 +309,7 @@ class DBEvalLog(SQLModel, table=True):
             stats=log.stats,
             error=log.error,
             reductions=log.reductions,
+            db_tags=tags or [],
         )
 
     def to_inspect(self) -> EvalLog:
