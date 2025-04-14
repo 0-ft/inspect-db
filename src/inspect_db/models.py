@@ -26,7 +26,18 @@ from sqlmodel import (
 from typing import Any, List, Literal
 from datetime import datetime
 import uuid
-from inspect_ai.log import EvalError, EvalLog, EvalSample, Event, EvalSampleLimit
+from inspect_ai.log import (
+    EvalError,
+    EvalLog,
+    EvalPlan,
+    EvalResults,
+    EvalSample,
+    EvalSampleReductions,
+    EvalSpec,
+    Event,
+    EvalSampleLimit,
+    EvalStats,
+)
 from uuid import UUID
 
 
@@ -169,7 +180,9 @@ class DBEvalSample(SQLModel, table=True):
 
     # Relationships
     log: "DBEvalLog" = Relationship(back_populates="samples")
-    messages: list[DBChatMessage] = Relationship(back_populates="sample")
+    messages: list[DBChatMessage] = Relationship(
+        back_populates="sample", cascade_delete=True
+    )
 
     # Inspect fields
     id: str  # Original inspect-ai sample ID
@@ -263,14 +276,48 @@ class DBEvalLog(SQLModel, table=True):
 
     # Database fields
     db_uuid: UUID = Field(default_factory=uuid.uuid4, primary_key=True)
-    location: str = Field(unique=True)  # Unique constraint on location
     inserted: datetime = Field(default_factory=datetime.now)
 
     # Relationships
-    samples: List["DBEvalSample"] = Relationship(back_populates="log")
+    samples: List["DBEvalSample"] = Relationship(
+        back_populates="log", cascade_delete=True
+    )
+
+    # Inspect fields
+    location: str = Field(unique=True)  # Unique constraint on location
+
+    eval: EvalSpec = Field(sa_column=Column(PickleType))
+    plan: EvalPlan = Field(sa_column=Column(PickleType))
+    results: EvalResults | None = Field(
+        default=None, sa_column=Column(PydanticJson(EvalResults))
+    )
+    stats: EvalStats = Field(sa_column=Column(PydanticJson(EvalStats)))
+    error: EvalError | None = Field(sa_column=Column(PydanticJson(EvalError)))
+
+    reductions: list[EvalSampleReductions] | None = Field(
+        default=None, sa_column=Column(PydanticJson(list[EvalSampleReductions]))
+    )
 
     @classmethod
     def from_inspect(cls, log: EvalLog) -> "DBEvalLog":
         return cls(
             location=log.location,
+            eval=log.eval,
+            plan=log.plan,
+            results=log.results,
+            stats=log.stats,
+            error=log.error,
+            reductions=log.reductions,
+        )
+
+    def to_inspect(self) -> EvalLog:
+        return EvalLog(
+            location=self.location,
+            eval=self.eval,
+            plan=self.plan,
+            results=self.results,
+            stats=self.stats,
+            error=self.error,
+            reductions=self.reductions,
+            samples=[sample.to_inspect() for sample in self.samples],
         )
