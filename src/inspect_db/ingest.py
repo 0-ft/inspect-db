@@ -224,6 +224,7 @@ def ingest_logs(database_uri, path_patterns, workers=4, tags: list[str] | None =
                 except Empty:
                     continue
                 except Exception as e:
+                    console.log(f"Error inserting {log_path}: {e}")
                     progress.update(
                         task_ids[log_path],
                         status="error",
