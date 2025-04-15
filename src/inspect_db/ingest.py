@@ -17,7 +17,6 @@ from rich.progress import (
     ProgressColumn,
 )
 from rich.console import Console, RenderableType
-from rich.live import Live
 from rich.table import Table
 from rich.text import Text
 from rich.spinner import Spinner
@@ -43,7 +42,7 @@ class StatusColumn(ProgressColumn):
         elif status == "queued":
             return Spinner("dots12", style="dim")
         else:
-            return "?"
+            return " "
 
 
 def read_log_worker(
@@ -126,12 +125,12 @@ def ingest_logs(database_uri, path_patterns, workers=4, tags: list[str] | None =
 
     # Create tasks for each log file
     task_ids: Dict[Path, TaskID] = {}
-    for log_path in log_paths:
-        task_ids[log_path] = progress.add_task(
-            f"{log_path.name[:8]}...{log_path.name[-12:]}",
-            status="queued",
-            error=None,
-        )
+    # for log_path in log_paths:
+    #     task_ids[log_path] = progress.add_task(
+    #         f"{log_path.name[:8]}...{log_path.name[-12:]}",
+    #         status="queued",
+    #         error=None,
+    #     )
 
     # Stats tracking
     stats = {
@@ -141,48 +140,67 @@ def ingest_logs(database_uri, path_patterns, workers=4, tags: list[str] | None =
         "failed": 0,
     }
 
-    # Check which logs are already in the database and queue up new ones
-    with db.session() as session:
-        for log_path in log_paths:
-            try:
-                log_header = read_eval_log(str(log_path), header_only=True)
-            except Exception as e:
-                console.log(f"Error reading {log_path}: {e}")
-                progress.update(
-                    task_ids[log_path],
-                    status="error",
-                    error=e,
-                    total=0,
+    with progress:
+        # Check which logs are already in the database and queue up new ones
+        log_locations: Dict[Path, str] = {}
+        with db.session() as session:
+            for log_path in progress.track(
+                log_paths, description="Checking existing logs"
+            ):
+                task_ids[log_path] = progress.add_task(
+                    f"{log_path.name[:8]}...{log_path.name[-12:]}",
+                    status="queued",
+                    error=None,
+                    visible=False,
                 )
-                stats["failed"] += 1
-                continue
 
-            query = select(DBEvalLog).where(
-                col(DBEvalLog.location) == log_header.location
+                try:
+                    log_header = read_eval_log(str(log_path), header_only=True)
+                    log_locations[log_path] = log_header.location
+                except Exception as e:
+                    console.log(f"Error reading {log_path}: {e}")
+                    progress.update(
+                        task_ids[log_path],
+                        status="error",
+                        error=e,
+                        total=0,
+                        visible=True,
+                    )
+                    stats["failed"] += 1
+                    continue
+
+        existing = session.exec(
+            select(DBEvalLog.location).where(
+                col(DBEvalLog.location).in_(log_locations.values())
             )
+        ).all()
 
-            if not session.exec(query).first():
+        for log_path, log_location in log_locations.items():
+            if log_location in existing:
+                console.log(f"Skipping {log_path} - already in database")
+                progress.update(task_ids[log_path], status="skipped", visible=False)
+            else:
                 job_queue.put((log_path, task_ids[log_path]))
+                progress.update(task_ids[log_path], status="queued", visible=True)
 
-    if job_queue.empty():
-        console.log("No new logs to process.")
-        return
+        if job_queue.empty():
+            console.log("No new logs to process.")
+            return
 
-    # Add sentinel values to stop workers
-    for _ in range(workers):
-        job_queue.put(None)
+        # Add sentinel values to stop workers
+        for _ in range(workers):
+            job_queue.put(None)
 
-    # Start workers
-    load_workers = []
-    for _ in range(workers):
-        thread = Thread(
-            target=read_log_worker,
-            args=(job_queue, insert_queue, progress, tags),
-        )
-        thread.start()
-        load_workers.append(thread)
+        # Start workers
+        load_workers = []
+        for _ in range(workers):
+            thread = Thread(
+                target=read_log_worker,
+                args=(job_queue, insert_queue, progress, tags),
+            )
+            thread.start()
+            load_workers.append(thread)
 
-    with Live(progress, refresh_per_second=10):
         with db.session() as session:
             # Process results while workers are running
             while any(t.is_alive() for t in load_workers) or not insert_queue.empty():
