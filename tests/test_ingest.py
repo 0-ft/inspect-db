@@ -50,5 +50,5 @@ def test_ingest_logs_multiple_workers(db_uri: str, sample_eval_log_paths: list[P
             log_uuid = log.db_uuid
             samples = list(raw_db.get_samples(log_uuid=log_uuid))
             assert len(samples) > 0
-            for sample in samples:
+            for locator, sample in samples:
                 assert len(sample.messages) > 0

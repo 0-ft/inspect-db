@@ -40,6 +40,8 @@ from inspect_ai.log import (
 )
 from uuid import UUID
 
+from inspect_db.common import EvalSampleLocator
+
 
 class PydanticJson(TypeDecorator):
     impl = BLOB()
@@ -268,6 +270,13 @@ class DBEvalSample(SQLModel, table=True):
             attachments=self.attachments,
             limit=self.limit,
             messages=[message.to_inspect() for message in self.messages],
+        )
+
+    def locator(self) -> EvalSampleLocator:
+        return EvalSampleLocator(
+            location=self.log.location,
+            sample_id=self.id,
+            epoch=self.epoch,
         )
 
 

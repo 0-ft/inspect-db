@@ -1,6 +1,5 @@
 import itertools
 import click
-import json
 from typing import Literal
 
 from inspect_ai.model import ChatMessageAssistant, ChatMessageTool
@@ -8,7 +7,7 @@ from inspect_ai.model import ChatMessageAssistant, ChatMessageTool
 from inspect_db.db import EvalDB
 from .ingest import ingest_logs
 from rich.console import Console, Group
-from rich.table import Table
+from rich.table import Table, Column
 from rich.panel import Panel
 from rich.text import Text
 from .models import DBChatMessage, DBEvalLog, DBEvalSample
@@ -125,14 +124,17 @@ def create_message_panel(message: DBChatMessage, pattern: str | None = None) -> 
     content = Group(message_text)
     # Add tool calls if present
     if isinstance(inspect_message, ChatMessageAssistant) and inspect_message.tool_calls:
-        table = Table(title="Tool Calls")
-        table.add_column("ID", style="cyan")
-        table.add_column("Function", style="cyan")
-        table.add_column("Arguments", style="dim")
+        table = Table(
+            Column("ID", style="cyan"),
+            Column("Function", style="cyan"),
+            Column("Arguments", style="dim"),
+            title="Tool Calls",
+        )
         for tool_call in inspect_message.tool_calls:
-            table.add_row(
-                tool_call.id, tool_call.function, json.dumps(tool_call.arguments)
-            )
+            args_table = Table()
+            for key, value in tool_call.arguments.items():
+                args_table.add_row(key, value)
+            table.add_row(tool_call.id, tool_call.function, args_table)
 
         content = Group(message_text, table)
     return Panel(content, title=header, border_style="blue")

@@ -58,7 +58,7 @@ def test_get_db_sample(raw_db: EvalDB, sample_eval_log: EvalLog):
     log_uuid = raw_db.ingest(sample_eval_log)
 
     # Get all samples to get a sample UUID
-    samples = list(raw_db.get_db_samples(log_uuid, None))
+    samples = list(raw_db.get_db_samples(log_uuid=log_uuid))
     assert len(samples) > 0
 
     # Test getting a single sample
@@ -127,5 +127,24 @@ def test_get_inspect_samples(raw_db: EvalDB, sample_eval_log: EvalLog):
     assert len(samples) > 0
 
     # Verify sample data
-    for orig_sample, sample in zip(sample_eval_log.samples or [], samples):
+    for orig_sample, (locator, sample) in zip(sample_eval_log.samples or [], samples):
         assert len(sample.messages) == len(orig_sample.messages)
+
+
+def test_insert_log_with_tags(raw_db: EvalDB, sample_eval_log: EvalLog):
+    """Test inserting a log with tags."""
+    log_uuid = raw_db.ingest(sample_eval_log, tags=["test", "test2"])
+    assert log_uuid is not None
+    selected = [log.db_uuid for log in raw_db.get_db_logs(tags=["test"])]
+    assert len(selected) == 1
+    assert selected[0] == log_uuid
+
+    selected = [log.db_uuid for log in raw_db.get_db_logs(tags=["test", "test2"])]
+    assert len(selected) == 1
+    assert selected[0] == log_uuid
+
+    selected = [log.db_uuid for log in raw_db.get_db_logs(tags=["test3"])]
+    assert len(selected) == 0
+
+    selected = [log.db_uuid for log in raw_db.get_db_logs(tags=["test", "test3"])]
+    assert len(selected) == 0

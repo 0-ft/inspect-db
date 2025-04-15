@@ -2,10 +2,13 @@ from collections.abc import Iterator
 from uuid import UUID
 from inspect_ai.log import EvalLog, EvalSample
 from inspect_ai.model import ChatMessage
+from inspect_ai.scorer import Score
 from sqlalchemy import Engine
 from sqlmodel import SQLModel, String, cast, col, create_engine, Session, func, select
 from typing import Any, Literal, Protocol
 from contextlib import contextmanager
+
+from inspect_db.common import EvalSampleLocator
 
 from .models import DBEvalLog, DBEvalSample, DBChatMessage
 import logging
@@ -22,7 +25,12 @@ class EvalSource(Protocol):
         """Get logs from the eval source."""
         ...
 
-    def get_samples(self) -> Iterator[EvalSample]:
+    def get_samples(
+        self,
+        log_task: str | None = None,
+        log_task_id: str | None = None,
+        sample_id: str | None = None,
+    ) -> Iterator[tuple[EvalSampleLocator, EvalSample]]:
         """Get samples from the eval source."""
         ...
 
@@ -30,8 +38,12 @@ class EvalSource(Protocol):
         self,
         role: Literal["system", "user", "assistant", "tool"] | None = None,
         pattern: str | None = None,
-    ) -> Iterator[ChatMessage]:
+    ) -> Iterator[tuple[EvalSampleLocator, ChatMessage]]:
         """Get messages from the eval source."""
+        ...
+
+    def get_scores(self) -> Iterator[tuple[EvalSampleLocator, dict[str, Score] | None]]:
+        """Get scores from the eval source."""
         ...
 
 
@@ -57,7 +69,12 @@ class EvalDB(EvalSource):
             SQLModel.metadata.create_all(self.engine)
             yield session
 
-    def ingest(self, log: EvalLog, session: Session | None = None) -> UUID:
+    def ingest(
+        self,
+        log: EvalLog,
+        tags: list[str] | None = None,
+        session: Session | None = None,
+    ) -> UUID:
         """Insert a log and its associated samples and messages into the database.
 
         Args:
@@ -68,7 +85,7 @@ class EvalDB(EvalSource):
         """
         # Create database models
         with session or self.session() as session:
-            db_log = DBEvalLog.from_inspect(log)
+            db_log = DBEvalLog.from_inspect(log, tags=tags)
             log_uuid = db_log.db_uuid
             samples = []
             messages = []
@@ -87,11 +104,51 @@ class EvalDB(EvalSource):
 
         return log_uuid
 
+    @staticmethod
+    def log_query(
+        log_uuid: UUID | None = None,
+        task: str | None = None,
+        task_id: str | None = None,
+        tags: list[str] | None = None,
+    ):
+        query = select(DBEvalLog)
+        if log_uuid:
+            query = query.where(DBEvalLog.db_uuid == log_uuid)
+        if task:
+            query = query.where(DBEvalLog.eval.task == task)
+        if task_id:
+            query = query.where(DBEvalLog.eval.task_id == task_id)
+        for tag in tags or []:
+            query = query.where(col(DBEvalLog.db_tags).contains(tag))
+        return query
+
+    @staticmethod
+    def sample_query(
+        sample_id: str | None = None,
+        log_task: str | None = None,
+        log_task_id: str | None = None,
+        log_uuid: UUID | None = None,
+        sample_uuid: UUID | None = None,
+    ):
+        query = select(DBEvalSample)
+        if sample_id:
+            query = query.where(DBEvalSample.id == sample_id)
+        if log_task:
+            query = query.where(DBEvalSample.log.eval.task == log_task)
+        if log_task_id:
+            query = query.where(DBEvalSample.log.eval.task_id == log_task_id)
+        if log_uuid:
+            query = query.where(DBEvalSample.db_log_uuid == log_uuid)
+        if sample_uuid:
+            query = query.where(DBEvalSample.db_uuid == sample_uuid)
+        return query
+
     def get_db_logs(
         self,
         log_uuid: UUID | None = None,
         task: str | None = None,
         task_id: str | None = None,
+        tags: list[str] | None = None,
         session: Session | None = None,
     ) -> Iterator[DBEvalLog]:
         """Get all logs in the database.
@@ -102,13 +159,12 @@ class EvalDB(EvalSource):
         Returns:
             The DBEvalLog object, or None if not found
         """
-        query = select(DBEvalLog)
-        if log_uuid:
-            query = query.where(DBEvalLog.db_uuid == log_uuid)
-        if task:
-            query = query.where(DBEvalLog.eval.task == task)
-        if task_id:
-            query = query.where(DBEvalLog.eval.task_id == task_id)
+        query = EvalDB.log_query(
+            log_uuid=log_uuid,
+            task=task,
+            task_id=task_id,
+            tags=tags,
+        )
         with session or self.session() as session:
             yield from session.exec(query)
 
@@ -117,32 +173,42 @@ class EvalDB(EvalSource):
         task: str | None = None,
         task_id: str | None = None,
         log_uuid: UUID | None = None,
+        tags: list[str] | None = None,
+        session: Session | None = None,
     ) -> Iterator[EvalLog]:
-        for db_log in self.get_db_logs(task=task, task_id=task_id, log_uuid=log_uuid):
+        for db_log in self.get_db_logs(
+            task=task, task_id=task_id, log_uuid=log_uuid, tags=tags, session=session
+        ):
             yield db_log.to_inspect()
 
     def get_db_samples(
-        self, log_uuid: UUID | None = None, sample_uuid: UUID | None = None
+        self,
+        log_task: str | None = None,
+        log_task_id: str | None = None,
+        sample_id: str | None = None,
+        log_uuid: UUID | None = None,
+        sample_uuid: UUID | None = None,
+        session: Session | None = None,
     ) -> Iterator[DBEvalSample]:
-        """Get all samples for a log.
-
-        Args:
-            log_id: ID of the log
-
-        Returns:
-            List of DBEvalSample objects
-        """
-        query = select(DBEvalSample)
-        if log_uuid:
-            query = query.where(DBEvalSample.db_log_uuid == log_uuid)
-        if sample_uuid:
-            query = query.where(DBEvalSample.db_uuid == sample_uuid)
-        with self.session() as session:
+        query = EvalDB.sample_query(
+            sample_id=sample_id,
+            log_task=log_task,
+            log_task_id=log_task_id,
+            log_uuid=log_uuid,
+            sample_uuid=sample_uuid,
+        )
+        with session or self.session() as session:
             yield from session.exec(query)
 
     def get_samples(
-        self, log_uuid: UUID | None = None, sample_uuid: UUID | None = None
-    ) -> Iterator[EvalSample]:
+        self,
+        log_task: str | None = None,
+        log_task_id: str | None = None,
+        sample_id: str | None = None,
+        log_uuid: UUID | None = None,
+        sample_uuid: UUID | None = None,
+        session: Session | None = None,
+    ) -> Iterator[tuple[EvalSampleLocator, EvalSample]]:
         """Get matching samples in inspect EvalSample format.
 
         Args:
@@ -152,25 +218,24 @@ class EvalDB(EvalSource):
         Returns:
             List of EvalSample objects
         """
-        for db_sample in self.get_db_samples(log_uuid, sample_uuid):
-            yield db_sample.to_inspect()
+        for db_sample in self.get_db_samples(
+            sample_id=sample_id,
+            log_task=log_task,
+            log_task_id=log_task_id,
+            log_uuid=log_uuid,
+            sample_uuid=sample_uuid,
+            session=session,
+        ):
+            yield (db_sample.locator(), db_sample.to_inspect())
 
     def get_db_messages(
         self,
-        log_uuid: UUID | None = None,
-        sample_uuid: UUID | None = None,
         role: Literal["system", "user", "assistant", "tool"] | None = None,
         pattern: str | None = None,
+        log_uuid: UUID | None = None,
+        sample_uuid: UUID | None = None,
+        session: Session | None = None,
     ) -> Iterator[DBChatMessage]:
-        """Get database messages for a sample, optionally filtered by role.
-
-        Args:
-            sample_id: ID of the sample
-            role: Optional role to filter messages by
-
-        Returns:
-            List of DBChatMessage objects
-        """
         query = select(DBChatMessage).order_by(
             col(DBChatMessage.db_log_uuid),
             col(DBChatMessage.db_sample_uuid),
@@ -186,8 +251,9 @@ class EvalDB(EvalSource):
             query = query.where(
                 cast(col(DBChatMessage.content), String).like(f"%{pattern}%")
             )  # TODO: duckdb-engine doesn't seem to support regexp_match
-        with self.session() as session:
-            yield from session.exec(query)
+        with session or self.session() as session:
+            for db_msg in session.exec(query):
+                yield db_msg
 
     def get_messages(
         self,
@@ -195,9 +261,35 @@ class EvalDB(EvalSource):
         pattern: str | None = None,
         log_uuid: UUID | None = None,
         sample_uuid: UUID | None = None,
-    ) -> Iterator[ChatMessage]:
-        for db_msg in self.get_db_messages(log_uuid, sample_uuid, role, pattern):
-            yield db_msg.to_inspect()
+        session: Session | None = None,
+    ) -> Iterator[tuple[EvalSampleLocator, ChatMessage]]:
+        for db_msg in self.get_db_messages(
+            role=role,
+            pattern=pattern,
+            log_uuid=log_uuid,
+            sample_uuid=sample_uuid,
+            session=session,
+        ):
+            yield (db_msg.sample.locator(), db_msg.to_inspect())
+
+    def get_scores(
+        self,
+        sample_id: str | None = None,
+        log_task: str | None = None,
+        log_task_id: str | None = None,
+        log_uuid: UUID | None = None,
+        sample_uuid: UUID | None = None,
+    ) -> Iterator[tuple[EvalSampleLocator, dict[str, Score] | None]]:
+        query = EvalDB.sample_query(
+            sample_id=sample_id,
+            log_task=log_task,
+            log_task_id=log_task_id,
+            log_uuid=log_uuid,
+            sample_uuid=sample_uuid,
+        )
+        with self.session() as session:
+            for db_sample in session.exec(query):
+                yield (db_sample.locator(), db_sample.scores)
 
     def stats(self) -> dict[str, Any]:
         with self.session() as session:
