@@ -37,3 +37,24 @@ jobs:
 
     - name: Run tests
       run: uv run pytest tests
+
+  build-demo:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Build and export demo
+        run: |
+          mkdir -p output
+          docker build -t inspect-db-demo .
+          docker run --rm -v $(pwd)/output:/output inspect-db-demo
+          
+      - name: Upload demo artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo
+          path: output/demo.gif
