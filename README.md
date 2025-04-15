@@ -2,7 +2,7 @@
 
 A fast database for ingesting and querying Inspect eval runs.
 
-![Demo](./demo.gif)
+![Demo](demo.gif)
 
 
 ## Aims
