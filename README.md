@@ -2,6 +2,9 @@
 
 A fast database for ingesting and querying Inspect eval runs.
 
+![Demo](./demo.gif)
+
+
 ## Aims
 - Enable rapid querying and analysis of messages and metadata over hundreds of runs
 - Facilitate rapid development of new analysis techniques
