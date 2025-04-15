@@ -19,6 +19,7 @@ from rich.progress import (
 from rich.console import Console, RenderableType
 from rich.live import Live
 from rich.table import Table
+from rich.text import Text
 from rich.spinner import Spinner
 from inspect_ai.log import read_eval_log
 from inspect_db.models import DBChatMessage, DBEvalLog, DBEvalSample
@@ -31,12 +32,18 @@ class StatusColumn(ProgressColumn):
 
     def render(self, task) -> RenderableType:
         status = task.fields.get("status", "")
-        if status == "✅":
-            return "✅"
-        elif status == "❌":
-            return "❌"
+        if status == "inserted":
+            return Text("✅", style="green")
+        elif status == "error":
+            return Text("❌", style="red")
+        elif status == "reading":
+            return Spinner("dots12", style="blue bold")
+        elif status == "inserting":
+            return Spinner("dots12", style="green bold")
+        elif status == "queued":
+            return Spinner("dots12", style="dim")
         else:
-            return Spinner("dots", style="blue")
+            return "?"
 
 
 def read_log_worker(
@@ -53,6 +60,7 @@ def read_log_worker(
 
         log_path, task_id = job
         try:
+            progress.update(task_id, status="reading")
             # Count samples
             log_header, sample_ids = read_eval_log_header(log_path)
             progress.update(task_id, total=len(sample_ids))
@@ -76,11 +84,12 @@ def read_log_worker(
                 progress.update(task_id, advance=1)
 
             insert_queue.put((log_path, to_insert))
+            progress.update(task_id, status="inserting")
 
         except Exception as e:
             progress.update(
                 task_id,
-                status="❌",
+                status="error",
                 error=str(e),
                 total=0,
             )
@@ -120,8 +129,8 @@ def ingest_logs(database_uri, path_patterns, workers=4, tags: list[str] | None =
     for log_path in log_paths:
         task_ids[log_path] = progress.add_task(
             f"{log_path.name[:8]}...{log_path.name[-12:]}",
-            status="",
-            error="",
+            status="queued",
+            error=None,
         )
 
     # Stats tracking
@@ -141,8 +150,8 @@ def ingest_logs(database_uri, path_patterns, workers=4, tags: list[str] | None =
                 console.log(f"Error reading {log_path}: {e}")
                 progress.update(
                     task_ids[log_path],
-                    status="❌",
-                    error=str(e),
+                    status="error",
+                    error=e,
                     total=0,
                 )
                 stats["failed"] += 1
@@ -183,7 +192,7 @@ def ingest_logs(database_uri, path_patterns, workers=4, tags: list[str] | None =
                     session.commit()
                     progress.update(
                         task_ids[log_path],
-                        status="✅",
+                        status="inserted",
                     )
 
                     # Update stats
@@ -199,8 +208,8 @@ def ingest_logs(database_uri, path_patterns, workers=4, tags: list[str] | None =
                 except Exception as e:
                     progress.update(
                         task_ids[log_path],
-                        status="❌",
-                        error=str(e),
+                        status="error",
+                        error=e,
                         total=0,
                     )
                     stats["failed"] += 1

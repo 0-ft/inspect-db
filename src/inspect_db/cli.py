@@ -1,6 +1,5 @@
 from collections.abc import Sequence
 import itertools
-import json
 import click
 from typing import Literal
 
@@ -14,6 +13,7 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
 import rich.box as box
+from rich.json import JSON
 from .models import DBChatMessage, DBEvalLog, DBEvalSample
 
 console = Console()
@@ -53,23 +53,11 @@ def stats(database_uri: str) -> None:
     console.print(db.stats_table())
 
 
-def format_message_json(message: DBChatMessage) -> str:
-    """Format a message as a JSON string.
-
-    Args:
-        message: Message to format
-
-    Returns:
-        JSON string representation of the message
-    """
-    return message.to_inspect().model_dump_json()
-
-
 def create_tool_call_table(tool_calls: Sequence[ToolCall]) -> RenderableType:
     def create_tool_call_panel(tool_call: ToolCall) -> Panel:
         table = Table(show_header=False, box=box.MINIMAL, pad_edge=False)
         for key, value in tool_call.arguments.items():
-            table.add_row(key, json.dumps(value, indent=2))
+            table.add_row(key, JSON.from_data(value, indent=2))
             table.add_section()
         title = Text(tool_call.function).append(f" {tool_call.id}", style="dim italic")
         return Panel(table, title=title, border_style="red")
@@ -77,10 +65,16 @@ def create_tool_call_table(tool_calls: Sequence[ToolCall]) -> RenderableType:
     return Group(*[create_tool_call_panel(tool_call) for tool_call in tool_calls])
 
 
-def create_message_panel(message: DBChatMessage, pattern: str | None = None) -> Panel:
+@click.pass_context
+def create_message_panel(
+    ctx: click.Context,
+    message: DBChatMessage,
+    pattern: str | None = None,
+) -> Panel:
     """Create a rich panel for a message.
 
     Args:
+        ctx: Click context containing display options
         message: Message to create panel for
         pattern: Optional search string to highlight
 
@@ -117,31 +111,60 @@ def create_message_panel(message: DBChatMessage, pattern: str | None = None) -> 
         message_text.highlight_regex(pattern, style="red bold")
 
     content = Group(message_text)
-    # Add tool calls if present
-    if isinstance(inspect_message, ChatMessageAssistant) and inspect_message.tool_calls:
+    # Add tool calls if present and enabled
+    if (
+        ctx.params.get("show_tool_calls", True)
+        and isinstance(inspect_message, ChatMessageAssistant)
+        and inspect_message.tool_calls
+    ):
         content = Group(
             message_text, create_tool_call_table(inspect_message.tool_calls)
         )
     return Panel(content, title=header, border_style="blue")
 
 
-def create_sample_panel(sample: DBEvalSample, message_panels: list[Panel]) -> Panel:
+@click.pass_context
+def create_sample_panel(
+    ctx: click.Context,
+    sample: DBEvalSample,
+    message_panels: list[Panel],
+) -> Panel:
     """Format a sample and its messages using rich formatting.
 
     Args:
-        sample_messages: List of messages in the sample
-        pattern: Optional search string to highlight
+        ctx: Click context containing display options
+        sample: Sample to format
+        message_panels: List of message panels to include
     """
-
     # Create sample panel with messages nested inside
+    content_elements = []
 
+    # Create score information if available and enabled
+    if ctx.params.get("show_scores", False) and sample.scores:
+        score_table = Table(
+            "Score",
+            "Value",
+            "Reason",
+            box=box.SIMPLE,
+            style="green",
+            header_style="green",
+        )
+
+        for score_name, score in sample.scores.items():
+            score_table.add_row(
+                score_name,
+                JSON.from_data(score.value, indent=2),
+                score.explanation if ctx.params.get("show_score_reasons", True) else "",
+            )
+        content_elements.append(score_table)
+
+    content_elements.extend(message_panels)
     sample_panel = Panel(
-        Group(*message_panels),
+        Group(*content_elements),
         title=Text(f"sample id: {sample.id} | epoch: {sample.epoch}"),
         border_style="green",
     )
 
-    # Print the nested structure
     return sample_panel
 
 
@@ -154,7 +177,7 @@ def create_log_panel(log: DBEvalLog, sample_panels: list[Panel]) -> Panel:
     """
     log_panel = Panel(
         Group(*sample_panels),
-        title=Text(f"{log.location} | inserted: {log.inserted}"),
+        title=Text(log.eval.task).append(f" {log.eval.created}", style="dim"),
         border_style="yellow",
     )
     return log_panel
@@ -179,6 +202,31 @@ def create_log_panel(log: DBEvalLog, sample_panels: list[Panel]) -> Panel:
     type=click.Choice(["true", "false"]),
     help="Filter messages by whether they have tool calls",
 )
+@click.option(
+    "--show-tool-calls/--hide-tool-calls",
+    default=True,
+    help="Show or hide tool calls in output",
+)
+@click.option(
+    "--show-scores/--hide-scores",
+    default=True,
+    help="Show or hide scores in output",
+)
+@click.option(
+    "--show-score-reasons/--hide-score-reasons",
+    default=True,
+    help="Show or hide score reasons in output",
+)
+@click.option(
+    "--log-task",
+    type=str,
+    help="Filter messages by log task name",
+)
+@click.option(
+    "--log-task-id",
+    type=str,
+    help="Filter messages by log task ID",
+)
 def grep(
     database_uri: str,
     pattern: str | None,
@@ -186,6 +234,11 @@ def grep(
     collect_logs: bool,
     json_output: bool,
     has_tool_calls: str | None,
+    log_task: str | None,
+    log_task_id: str | None,
+    show_tool_calls: bool,
+    show_scores: bool,
+    show_score_reasons: bool,
 ) -> None:
     """Search through messages in the database.
 
@@ -201,12 +254,14 @@ def grep(
         pattern=pattern,
         role=role,
         has_tool_calls=has_tool_calls_bool,
+        log_task=log_task,
+        log_task_id=log_task_id,
     )
 
     # Format output
     if json_output:
         for message in messages:
-            print(format_message_json(message))
+            print(message.to_inspect().model_dump_json())
     else:
         if collect_logs:
             by_log = itertools.groupby(messages, key=lambda x: x.sample.log)

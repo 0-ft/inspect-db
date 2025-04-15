@@ -235,6 +235,8 @@ class EvalDB(EvalSource):
         role: Literal["system", "user", "assistant", "tool"] | None = None,
         pattern: str | None = None,
         log_uuid: UUID | None = None,
+        log_task: str | None = None,
+        log_task_id: str | None = None,
         sample_uuid: UUID | None = None,
         has_tool_calls: bool | None = None,
         session: Session | None = None,
@@ -250,6 +252,10 @@ class EvalDB(EvalSource):
             query = query.where(col(DBChatMessage.db_sample_uuid) == sample_uuid)
         if role:
             query = query.where(DBChatMessage.role == role)
+        if log_task:
+            query = query.where(DBChatMessage.sample.log.eval.task == log_task)
+        if log_task_id:
+            query = query.where(DBChatMessage.sample.log.eval.task_id == log_task_id)
         if pattern:
             query = query.where(
                 cast(col(DBChatMessage.content), String).like(f"%{pattern}%")
@@ -268,6 +274,8 @@ class EvalDB(EvalSource):
         role: Literal["system", "user", "assistant", "tool"] | None = None,
         pattern: str | None = None,
         log_uuid: UUID | None = None,
+        log_task: str | None = None,
+        log_task_id: str | None = None,
         sample_uuid: UUID | None = None,
         has_tool_calls: bool | None = None,
         session: Session | None = None,
@@ -276,6 +284,8 @@ class EvalDB(EvalSource):
             role=role,
             pattern=pattern,
             log_uuid=log_uuid,
+            log_task=log_task,
+            log_task_id=log_task_id,
             sample_uuid=sample_uuid,
             has_tool_calls=has_tool_calls,
             session=session,
