@@ -14,15 +14,29 @@ from rich.progress import (
     MofNCompleteColumn,
     TimeRemainingColumn,
     TaskID,
-    SpinnerColumn,
+    ProgressColumn,
 )
-from rich.console import Console
+from rich.console import Console, RenderableType
 from rich.live import Live
 from rich.table import Table
+from rich.spinner import Spinner
 from inspect_ai.log import read_eval_log
 from inspect_db.models import DBChatMessage, DBEvalLog, DBEvalSample
 from inspect_db.util import iter_inspect_samples_fast, read_eval_log_header
 from .db import EvalDB
+
+
+class StatusColumn(ProgressColumn):
+    """A column that shows a spinner, tick, or cross based on task status."""
+
+    def render(self, task) -> RenderableType:
+        status = task.fields.get("status", "")
+        if status == "✅":
+            return "✅"
+        elif status == "❌":
+            return "❌"
+        else:
+            return Spinner("dots", style="blue")
 
 
 def read_log_worker(
@@ -92,8 +106,7 @@ def ingest_logs(database_uri, path_patterns, workers=4, tags: list[str] | None =
 
     # Setup progress tracking
     progress = Progress(
-        SpinnerColumn(),
-        TextColumn("{task.fields[status]}", style="bold"),
+        StatusColumn(),
         TextColumn("{task.description}"),
         # TextColumn("{task.fields[error]}", style="red"),
         BarColumn(),

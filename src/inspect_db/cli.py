@@ -1,15 +1,19 @@
+from collections.abc import Sequence
 import itertools
+import json
 import click
 from typing import Literal
 
 from inspect_ai.model import ChatMessageAssistant, ChatMessageTool
+from inspect_ai.tool import ToolCall
 
 from inspect_db.db import EvalDB
 from .ingest import ingest_logs
-from rich.console import Console, Group
-from rich.table import Table, Column
+from rich.console import Console, Group, RenderableType
+from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
+import rich.box as box
 from .models import DBChatMessage, DBEvalLog, DBEvalSample
 
 console = Console()
@@ -82,6 +86,18 @@ def format_message_json(message: DBChatMessage) -> str:
     return message.to_inspect().model_dump_json()
 
 
+def create_tool_call_table(tool_calls: Sequence[ToolCall]) -> RenderableType:
+    def create_tool_call_panel(tool_call: ToolCall) -> Panel:
+        table = Table(show_header=False, box=box.MINIMAL, pad_edge=False)
+        for key, value in tool_call.arguments.items():
+            table.add_row(key, json.dumps(value, indent=2))
+            table.add_section()
+        title = Text(tool_call.function).append(f" {tool_call.id}", style="dim italic")
+        return Panel(table, title=title, border_style="red")
+
+    return Group(*[create_tool_call_panel(tool_call) for tool_call in tool_calls])
+
+
 def create_message_panel(message: DBChatMessage, pattern: str | None = None) -> Panel:
     """Create a rich panel for a message.
 
@@ -124,19 +140,9 @@ def create_message_panel(message: DBChatMessage, pattern: str | None = None) -> 
     content = Group(message_text)
     # Add tool calls if present
     if isinstance(inspect_message, ChatMessageAssistant) and inspect_message.tool_calls:
-        table = Table(
-            Column("ID", style="cyan"),
-            Column("Function", style="cyan"),
-            Column("Arguments", style="dim"),
-            title="Tool Calls",
+        content = Group(
+            message_text, create_tool_call_table(inspect_message.tool_calls)
         )
-        for tool_call in inspect_message.tool_calls:
-            args_table = Table()
-            for key, value in tool_call.arguments.items():
-                args_table.add_row(key, value)
-            table.add_row(tool_call.id, tool_call.function, args_table)
-
-        content = Group(message_text, table)
     return Panel(content, title=header, border_style="blue")
 
 
@@ -188,12 +194,19 @@ def create_log_panel(log: DBEvalLog, sample_panels: list[Panel]) -> Panel:
 )
 @click.option("--collect-logs", "-l", is_flag=True, help="Collect messages by log")
 @click.option("--json-output", "-j", is_flag=True, help="Output results as JSON lines")
+@click.option(
+    "--has-tool-calls",
+    "-t",
+    type=click.Choice(["true", "false"]),
+    help="Filter messages by whether they have tool calls",
+)
 def grep(
     database_uri: str,
     pattern: str | None,
     role: Literal["system", "user", "assistant", "tool"] | None,
     collect_logs: bool,
     json_output: bool,
+    has_tool_calls: str | None,
 ) -> None:
     """Search through messages in the database.
 
@@ -201,8 +214,15 @@ def grep(
     """
     db = EvalDB(database_uri)
 
+    # Convert has_tool_calls string to bool if specified
+    has_tool_calls_bool = None if has_tool_calls is None else has_tool_calls == "true"
+
     # Get matching messages
-    messages = db.get_db_messages(pattern=pattern, role=role)
+    messages = db.get_db_messages(
+        pattern=pattern,
+        role=role,
+        has_tool_calls=has_tool_calls_bool,
+    )
 
     # Format output
     if json_output:

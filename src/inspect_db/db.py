@@ -234,6 +234,7 @@ class EvalDB(EvalSource):
         pattern: str | None = None,
         log_uuid: UUID | None = None,
         sample_uuid: UUID | None = None,
+        has_tool_calls: bool | None = None,
         session: Session | None = None,
     ) -> Iterator[DBChatMessage]:
         query = select(DBChatMessage).order_by(
@@ -251,6 +252,11 @@ class EvalDB(EvalSource):
             query = query.where(
                 cast(col(DBChatMessage.content), String).like(f"%{pattern}%")
             )  # TODO: duckdb-engine doesn't seem to support regexp_match
+        if has_tool_calls is not None:
+            if has_tool_calls:
+                query = query.where(col(DBChatMessage.tool_calls) != None)  # noqa: E711
+            else:
+                query = query.where(col(DBChatMessage.tool_calls) == None)  # noqa: E711
         with session or self.session() as session:
             for db_msg in session.exec(query):
                 yield db_msg
@@ -261,6 +267,7 @@ class EvalDB(EvalSource):
         pattern: str | None = None,
         log_uuid: UUID | None = None,
         sample_uuid: UUID | None = None,
+        has_tool_calls: bool | None = None,
         session: Session | None = None,
     ) -> Iterator[tuple[EvalSampleLocator, ChatMessage]]:
         for db_msg in self.get_db_messages(
@@ -268,6 +275,7 @@ class EvalDB(EvalSource):
             pattern=pattern,
             log_uuid=log_uuid,
             sample_uuid=sample_uuid,
+            has_tool_calls=has_tool_calls,
             session=session,
         ):
             yield (db_msg.sample.locator(), db_msg.to_inspect())
