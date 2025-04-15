@@ -25,6 +25,16 @@ Wait
 
 Sleep 800ms
 
+Type "inspect-db stats duckdb:///evals.db"
+
+Sleep 300ms
+
+Enter
+
+Wait
+
+Sleep 1s
+
 Type "inspect-db grep duckdb:///evals.db -r assistant -p deployed"
 
 Sleep 300ms
@@ -34,3 +44,4 @@ Enter
 Wait
 
 Sleep 2s
+

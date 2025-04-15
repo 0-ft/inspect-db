@@ -49,29 +49,8 @@ def stats(database_uri: str) -> None:
     DATABASE_URI: SQLAlchemy database URI (e.g. 'sqlite:///eval.db')
     """
     db = EvalDB(database_uri)
-    stats = db.stats()
 
-    # Create and display main stats table
-    main_table = Table(title="Database Statistics")
-    main_table.add_column("Metric", style="cyan")
-    main_table.add_column("Value", style="green")
-
-    main_table.add_row("Total Logs", str(stats["log_count"]))
-    main_table.add_row("Total Samples", str(stats["sample_count"]))
-    main_table.add_row("Total Messages", str(stats["message_count"]))
-    main_table.add_row("Avg Samples per Log", str(stats["avg_samples_per_log"]))
-    main_table.add_row("Avg Messages per Sample", str(stats["avg_messages_per_sample"]))
-    console.print(main_table)
-
-    # Create and display role distribution table
-    role_table = Table(title="Message Role Distribution")
-    role_table.add_column("Role", style="cyan")
-    role_table.add_column("Count", style="green")
-
-    for role, count in stats["role_distribution"].items():
-        role_table.add_row(role, str(count))
-
-    console.print(role_table)
+    console.print(db.stats_table())
 
 
 def format_message_json(message: DBChatMessage) -> str:

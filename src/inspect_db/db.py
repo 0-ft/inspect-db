@@ -9,6 +9,8 @@ from typing import Any, Literal, Protocol
 from contextlib import contextmanager
 
 from inspect_db.common import EvalSampleLocator
+from rich.table import Table
+from rich.console import RenderableType
 
 from .models import DBEvalLog, DBEvalSample, DBChatMessage
 import logging
@@ -315,34 +317,10 @@ class EvalDB(EvalSource):
             ).one()
 
             # Get average samples per log
-            avg_samples = (
-                session.exec(
-                    select(
-                        func.avg(
-                            select(func.count())
-                            .select_from(DBEvalSample)
-                            .where(DBEvalSample.db_log_uuid == DBEvalLog.db_uuid)
-                            .scalar_subquery()
-                        )
-                    )
-                ).one()
-                or 0
-            )
+            avg_samples = sample_count / log_count if log_count > 0 else 0
 
             # Get average messages per sample
-            avg_messages = (
-                session.exec(
-                    select(
-                        func.avg(
-                            select(func.count())
-                            .select_from(DBChatMessage)
-                            .where(DBChatMessage.db_sample_uuid == DBEvalSample.db_uuid)
-                            .scalar_subquery()
-                        )
-                    )
-                ).one()
-                or 0
-            )
+            avg_messages = message_count / sample_count if sample_count > 0 else 0
 
             # Get message role distribution
             role_counts = session.exec(
@@ -357,3 +335,29 @@ class EvalDB(EvalSource):
                 "avg_messages_per_sample": round(avg_messages, 2),
                 "role_distribution": dict(role_counts),
             }
+
+    def stats_table(self) -> RenderableType:
+        stats = self.stats()
+
+        # Create and display main stats table
+        table = Table(title="Database Statistics")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="green")
+
+        table.add_row("Total Logs", str(stats["log_count"]))
+        table.add_row("Total Samples", str(stats["sample_count"]))
+        table.add_row("Total Messages", str(stats["message_count"]))
+
+        table.add_section()
+        table.add_row("System Messages", str(stats["role_distribution"]["system"]))
+        table.add_row("User Messages", str(stats["role_distribution"]["user"]))
+        table.add_row(
+            "Assistant Messages", str(stats["role_distribution"]["assistant"])
+        )
+        table.add_row("Tool Messages", str(stats["role_distribution"]["tool"]))
+        table.add_section()
+
+        table.add_row("Avg Samples per Log", str(stats["avg_samples_per_log"]))
+        table.add_row("Avg Messages per Sample", str(stats["avg_messages_per_sample"]))
+
+        return table
