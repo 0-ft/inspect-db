@@ -55,7 +55,7 @@ def read_log_worker(
     """Process a single log file and return the DB objects to insert."""
     while True:
         print("Getting log path")
-        log_path = job_queue.get_nowait()
+        log_path = job_queue.get(block=True)
         if log_path is None:
             job_queue.put(None)
             print("Received sentinel value, exiting")
