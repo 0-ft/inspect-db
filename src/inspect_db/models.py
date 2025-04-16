@@ -190,7 +190,9 @@ class DBEvalSample(SQLModel, table=True):
     id: str  # Original inspect-ai sample ID
     epoch: int
 
-    input: str | list[ChatMessage] = Field(sa_column=Column(JSON))
+    input: str | list[ChatMessage] = Field(
+        sa_column=Column(PydanticJson(str | list[ChatMessage]))
+    )
     choices: list[str] | None = Field(default=None, sa_column=Column(JSON))
     target: str | list[str] = Field(sa_column=Column(JSON))
 
