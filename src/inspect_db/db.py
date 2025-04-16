@@ -75,8 +75,6 @@ class EvalDB(EvalSource):
         self,
         log: EvalLog,
         tags: list[str] | None = None,
-        session: Session | None = None,
-        commit: bool = True,
     ) -> UUID:
         """Insert a log and its associated samples and messages into the database.
 
@@ -87,7 +85,7 @@ class EvalDB(EvalSource):
             The UUID of the inserted log
         """
         # Create database models
-        with session or self.session() as session:
+        with self.session() as session:
             db_log = DBEvalLog.from_inspect(log, tags=tags)
             log_uuid = db_log.db_uuid
             samples = []
@@ -103,8 +101,7 @@ class EvalDB(EvalSource):
             session.add(db_log)
             session.add_all(samples)
             session.add_all(messages)
-            if commit:
-                session.commit()
+            session.commit()
 
         return log_uuid
 

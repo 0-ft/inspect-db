@@ -36,25 +36,24 @@ def ingest_logs(database_uri, path_patterns, workers=4, tags: list[str] | None =
     with db.session() as session:
         existing_locations = set(session.exec(select(DBEvalLog.location)).all())
 
-        for log_path in tqdm(log_paths, desc="Processing logs"):
-            if log_path.name in existing_locations:
-                stats["logs_skipped"] += 1
-                tqdm.write(f"Skipping log {log_path} because it already exists")
-                continue
+    for log_path in tqdm(log_paths, desc="Processing logs"):
+        if log_path.name in existing_locations:
+            stats["logs_skipped"] += 1
+            tqdm.write(f"Skipping log {log_path} because it already exists")
+            continue
 
-            try:
-                log = read_eval_log(str(log_path))
-                db.ingest(log, tags=tags, session=session, commit=False)
-                session.commit()
-                stats["logs_inserted"] += 1
-                stats["samples_inserted"] += len(log.samples or [])
-                stats["messages_inserted"] += sum(
-                    len(sample.messages) for sample in log.samples or []
-                )
-                tqdm.write(f"Ingested log {log_path}")
-            except Exception as e:
-                stats["logs_failed"] += 1
-                tqdm.write(f"Failed to ingest log {log_path}: {e}")
+        try:
+            log = read_eval_log(str(log_path))
+            db.ingest(log, tags=tags)
+            stats["logs_inserted"] += 1
+            stats["samples_inserted"] += len(log.samples or [])
+            stats["messages_inserted"] += sum(
+                len(sample.messages) for sample in log.samples or []
+            )
+            tqdm.write(f"Ingested log {log_path}")
+        except Exception as e:
+            stats["logs_failed"] += 1
+            tqdm.write(f"Failed to ingest log {log_path}: {e}")
 
     # Display summary table
     table = Table(title="Ingestion Summary")
