@@ -82,7 +82,7 @@ def read_log_worker(
 
                 progress.update(task_id, advance=1)
 
-            insert_queue.put((log_path, to_insert))
+            insert_queue.put((log_path, to_insert), block=True)
             progress.update(task_id, status="inserting")
 
         except Exception as e:
@@ -109,7 +109,7 @@ def ingest_logs(database_uri, path_patterns, workers=4, tags: list[str] | None =
     # Setup queues
     job_queue: Queue[tuple[Path, TaskID] | None] = Queue()
     insert_queue: Queue[tuple[Path, List[DBEvalLog | DBEvalSample | DBChatMessage]]] = (
-        Queue()
+        Queue(maxsize=8)
     )
 
     # Setup progress tracking
@@ -211,6 +211,7 @@ def ingest_logs(database_uri, path_patterns, workers=4, tags: list[str] | None =
                     progress.update(
                         task_ids[log_path],
                         status="inserted",
+                        visible=False,
                     )
 
                     # Update stats
