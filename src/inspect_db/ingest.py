@@ -1,29 +1,22 @@
 from __future__ import annotations
 from glob import glob
 from pathlib import Path
-from queue import Queue
-from queue import Empty
-from threading import Thread
-from typing import List, Dict
+from multiprocessing import Queue, Process
+from typing import List, Optional
+from dataclasses import dataclass
 
-from sqlmodel import select, col
+from sqlmodel import select
 from rich.progress import (
-    Progress,
-    TextColumn,
-    BarColumn,
-    MofNCompleteColumn,
-    TimeRemainingColumn,
-    TaskID,
     ProgressColumn,
 )
 from rich.console import Console, RenderableType
 from rich.table import Table
 from rich.text import Text
 from rich.spinner import Spinner
-from inspect_ai.log import read_eval_log
-from inspect_db.models import DBChatMessage, DBEvalLog, DBEvalSample
-from inspect_db.util import iter_inspect_samples_fast, read_eval_log_header
+from inspect_ai.log import EvalLog, read_eval_log
+from inspect_db.models import DBEvalLog
 from .db import EvalDB
+from tqdm import tqdm
 
 
 class StatusColumn(ProgressColumn):
@@ -45,53 +38,42 @@ class StatusColumn(ProgressColumn):
             return " "
 
 
+@dataclass
+class LogReadResult:
+    log_path: Path
+    log: Optional[EvalLog] = None
+    error: Optional[Exception] = None
+
+    def __post_init__(self):
+        pass  # No longer needed since we use field(default_factory=list)
+
+
 def read_log_worker(
-    job_queue: Queue[tuple[Path, TaskID] | None],
-    insert_queue: Queue[tuple[Path, List[DBEvalLog | DBEvalSample | DBChatMessage]]],
-    progress: Progress,
-    tags: list[str] | None,
-):
-    """Process logs from a job queue and return the DB objects to insert."""
+    job_queue: Queue[Path | None],
+    results_queue: Queue[LogReadResult | None],
+) -> None:
+    """Process a single log file and return the DB objects to insert."""
     while True:
-        job = job_queue.get(block=True)
-        if job is None:  # Sentinel value to stop worker
-            return
+        print("Getting log path")
+        log_path = job_queue.get_nowait()
+        if log_path is None:
+            job_queue.put(None)
+            print("Received sentinel value, exiting")
+            break
 
-        log_path, task_id = job
         try:
-            progress.update(task_id, status="reading")
-            # Count samples
-            log_header, sample_ids = read_eval_log_header(log_path)
-            progress.update(task_id, total=len(sample_ids))
-
-            # Create DB objects
-            to_insert = []
-            db_log = DBEvalLog.from_inspect(log_header, tags=tags)
-            to_insert.append(db_log)
-
-            # Process each sample
-            for sample in iter_inspect_samples_fast(log_path, sample_ids):
-                db_sample = DBEvalSample.from_inspect(sample, db_log.db_uuid)
-                to_insert.append(db_sample)
-
-                for i, message in enumerate(sample.messages):
-                    db_message = DBChatMessage.from_inspect(
-                        message, db_sample.db_uuid, db_log.db_uuid, i
-                    )
-                    to_insert.append(db_message)
-
-                progress.update(task_id, advance=1)
-
-            insert_queue.put((log_path, to_insert), block=True)
-            progress.update(task_id, status="inserting")
-
+            print(f"Reading log: {log_path}")
+            # Read full log since it's new
+            log = read_eval_log(str(log_path))
+            if not isinstance(log, object) or not hasattr(log, "samples"):
+                raise ValueError(f"Invalid log format: {log_path}")
+            print(f"Read log: {log_path}")
+            results_queue.put(LogReadResult(log_path=log_path, log=log, error=None))
         except Exception as e:
-            progress.update(
-                task_id,
-                status="error",
-                error=str(e),
-                total=0,
-            )
+            print(f"Error reading log: {log_path}")
+            results_queue.put(LogReadResult(log_path=log_path, log=None, error=e))
+    results_queue.put(None)
+    print("Worker finished")
 
 
 def ingest_logs(database_uri, path_patterns, workers=4, tags: list[str] | None = None):
@@ -106,32 +88,6 @@ def ingest_logs(database_uri, path_patterns, workers=4, tags: list[str] | None =
         for path in glob(pattern, recursive=True)
     ]
 
-    # Setup queues
-    job_queue: Queue[tuple[Path, TaskID] | None] = Queue()
-    insert_queue: Queue[tuple[Path, List[DBEvalLog | DBEvalSample | DBChatMessage]]] = (
-        Queue(maxsize=8)
-    )
-
-    # Setup progress tracking
-    progress = Progress(
-        StatusColumn(),
-        TextColumn("{task.description}"),
-        # TextColumn("{task.fields[error]}", style="red"),
-        BarColumn(),
-        MofNCompleteColumn(),
-        TimeRemainingColumn(),
-        console=console,
-    )
-
-    # Create tasks for each log file
-    task_ids: Dict[Path, TaskID] = {}
-    # for log_path in log_paths:
-    #     task_ids[log_path] = progress.add_task(
-    #         f"{log_path.name[:8]}...{log_path.name[-12:]}",
-    #         status="queued",
-    #         error=None,
-    #     )
-
     # Stats tracking
     stats = {
         "logs": 0,
@@ -140,105 +96,44 @@ def ingest_logs(database_uri, path_patterns, workers=4, tags: list[str] | None =
         "failed": 0,
     }
 
-    with progress:
-        # Check which logs are already in the database and queue up new ones
-        log_locations: Dict[Path, str] = {}
-        with db.session() as session:
-            for log_path in progress.track(
-                log_paths, description="Checking existing logs"
-            ):
-                task_ids[log_path] = progress.add_task(
-                    f"{log_path.name[:8]}...{log_path.name[-12:]}",
-                    status="queued",
-                    error=None,
-                    visible=False,
-                )
+    # First get all existing log locations
+    with db.session() as session:
+        existing_locations = set(session.exec(select(DBEvalLog.location)).all())
 
-                try:
-                    log_header = read_eval_log(str(log_path), header_only=True)
-                    log_locations[log_path] = log_header.location
-                except Exception as e:
-                    console.log(f"Error reading {log_path}: {e}")
-                    progress.update(
-                        task_ids[log_path],
-                        status="error",
-                        error=e,
-                        total=0,
-                        visible=True,
-                    )
-                    stats["failed"] += 1
-                    continue
+    job_queue: Queue[Path | None] = Queue()
+    results_queue: Queue[LogReadResult | None] = Queue()
 
-        existing = session.exec(
-            select(DBEvalLog.location).where(
-                col(DBEvalLog.location).in_(log_locations.values())
-            )
-        ).all()
+    for log_path in log_paths:
+        if log_path.name in existing_locations:
+            continue
+        job_queue.put(log_path)
 
-        for log_path, log_location in log_locations.items():
-            if log_location in existing:
-                console.log(f"Skipping {log_path} - already in database")
-                progress.update(task_ids[log_path], status="skipped", visible=False)
-            else:
-                job_queue.put((log_path, task_ids[log_path]))
-                progress.update(task_ids[log_path], status="queued", visible=True)
+    job_queue.put(None)
 
-        if job_queue.empty():
-            console.log("No new logs to process.")
-            return
+    worker_processes = []
+    for _ in range(workers):
+        worker = Process(target=read_log_worker, args=(job_queue, results_queue))
+        worker.start()
+        worker_processes.append(worker)
 
-        # Add sentinel values to stop workers
-        for _ in range(workers):
-            job_queue.put(None)
+    results: List[LogReadResult] = []
+    workers_finished = 0
+    while workers_finished < workers:
+        result = results_queue.get(block=True)
+        if result is None:
+            workers_finished += 1
+        else:
+            results.append(result)
 
-        # Start workers
-        load_workers = []
-        for _ in range(workers):
-            thread = Thread(
-                target=read_log_worker,
-                args=(job_queue, insert_queue, progress, tags),
-            )
-            thread.start()
-            load_workers.append(thread)
+    print("All logs read, inserting to database")
 
-        with db.session() as session:
-            # Process results while workers are running
-            while any(t.is_alive() for t in load_workers) or not insert_queue.empty():
-                try:
-                    log_path, result = insert_queue.get(block=True, timeout=0.1)
-                    session.add_all(result)
-                    session.commit()
-                    progress.update(
-                        task_ids[log_path],
-                        status="inserted",
-                        visible=False,
-                    )
+    # Insert all results in a single transaction
+    with db.session() as session:
+        for result in tqdm(results, desc="Inserting logs"):
+            if result.log is not None and not result.error:  # Check if log exists
+                db.ingest(result.log, tags=tags, session=session, commit=False)
 
-                    # Update stats
-                    stats["logs"] += 1
-                    stats["samples"] += sum(
-                        1 for r in result if isinstance(r, DBEvalSample)
-                    )
-                    stats["messages"] += sum(
-                        1 for r in result if isinstance(r, DBChatMessage)
-                    )
-                except Empty:
-                    continue
-                except Exception as e:
-                    console.log(f"Error inserting {log_path}: {e}")
-                    progress.update(
-                        task_ids[log_path],
-                        status="error",
-                        error=e,
-                        total=0,
-                    )
-                    stats["failed"] += 1
-
-            # Clean up
-            for thread in load_workers:
-                thread.join()
-
-            session.commit()
+        session.commit()
 
     # Display summary table
     table = Table(title="Ingestion Summary")

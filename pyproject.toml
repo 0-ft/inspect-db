@@ -13,6 +13,7 @@ dependencies = [
     "pydantic>=2.11.3",
     "rich>=13.9.4",
     "sqlmodel>=0.0.24",
+    "tqdm>=4.67.1",
 ]
 
 [project.scripts]

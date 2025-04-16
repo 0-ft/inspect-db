@@ -76,6 +76,7 @@ class EvalDB(EvalSource):
         log: EvalLog,
         tags: list[str] | None = None,
         session: Session | None = None,
+        commit: bool = True,
     ) -> UUID:
         """Insert a log and its associated samples and messages into the database.
 
@@ -102,7 +103,8 @@ class EvalDB(EvalSource):
             session.add(db_log)
             session.add_all(samples)
             session.add_all(messages)
-            session.commit()
+            if commit:
+                session.commit()
 
         return log_uuid
 
